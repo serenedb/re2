@@ -229,6 +229,7 @@
 namespace re2 {
 class Prog;
 class Regexp;
+class TeddyMatcher;
 }  // namespace re2
 
 namespace re2 {
@@ -241,6 +242,7 @@ class RE2 {
   // We convert user-passed pointers into special Arg objects
   class Arg;
   class Options;
+  class TokenizerState;
 
   // Defined in set.h.
   class Set;
@@ -589,6 +591,15 @@ class RE2 {
              absl::string_view* submatch,
              int nsubmatch) const;
 
+  bool FastMatch(absl::string_view text, absl::string_view* match) const;
+
+  // Uses TeddyMatcher if available, returns true if matched.
+  // Returns false if TeddyMatcher is not available or if it didn't match.
+  bool TeddyMatch(absl::string_view text, absl::string_view* match) const;
+
+  // Returns true if the regex uses TeddyMatcher (literal alternation).
+  bool HasTeddyMatcher() const { return teddy_matcher_ != nullptr; }
+
   // Check that the given rewrite string is suitable for use with this
   // regular expression.  It checks that:
   //   * The regular expression has enough parenthesized subexpressions
@@ -797,6 +808,7 @@ class RE2 {
   bool prefix_foldcase_ : 1;      // prefix_ is ASCII case-insensitive
   std::string prefix_;            // required prefix (before suffix_regexp_)
   re2::Prog* prog_;               // compiled program for regexp
+  re2::TeddyMatcher* teddy_matcher_;
 
   // Reverse Prog for DFA execution only
   mutable re2::Prog* rprog_;
@@ -1016,6 +1028,20 @@ class LazyRE2 {
   }
 
   void operator=(const LazyRE2&);  // disallowed
+};
+
+class DFA;
+
+// Advanced API for tokenizers
+class RE2::TokenizerState {
+ public:
+  explicit TokenizerState(const RE2* re);
+  ~TokenizerState();
+  bool Match(absl::string_view text, size_t startpos, absl::string_view* match);
+ private:
+  const RE2* re_;
+  DFA* dfa_;
+  DFA* r_dfa_;
 };
 
 namespace hooks {

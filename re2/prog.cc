@@ -125,14 +125,12 @@ Prog::Prog()
     prefix_size_(0),
     list_count_(0),
     bit_state_text_max_size_(0),
-    dfa_mem_(0),
-    dfa_first_(NULL),
-    dfa_longest_(NULL) {
+    dfa_mem_(0) {
 }
 
 Prog::~Prog() {
-  DeleteDFA(dfa_longest_);
-  DeleteDFA(dfa_first_);
+  for (DFA* dfa : dfa_first_pool_) DeleteDFA(dfa);
+  for (DFA* dfa : dfa_longest_pool_) DeleteDFA(dfa);
   if (prefix_foldcase_)
     delete[] prefix_dfa_;
 }

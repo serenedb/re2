@@ -21,6 +21,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "re2/pod_array.h"
 #include "re2/re2.h"
 #include "re2/sparse_array.h"
@@ -428,10 +429,13 @@ class Prog {
   // FOR TESTING ONLY.
   static void TESTING_ONLY_set_dfa_should_bail_when_slow(bool b);
 
+ public:
+  DFA* GetDFA(MatchKind kind);
+  void PutDFA(DFA* dfa);
+
  private:
   friend class Compiler;
 
-  DFA* GetDFA(MatchKind kind);
   void DeleteDFA(DFA* dfa);
 
   bool anchor_start_;       // regexp has explicit start anchor
@@ -465,13 +469,14 @@ class Prog {
   PODArray<uint8_t> onepass_nodes_;  // data for OnePass nodes
 
   int64_t dfa_mem_;         // Maximum memory for DFAs.
-  DFA* dfa_first_;          // DFA cached for kFirstMatch/kManyMatch
-  DFA* dfa_longest_;        // DFA cached for kLongestMatch/kFullMatch
+
+  absl::Mutex dfa_pool_mutex_;
+  std::atomic<DFA*> fast_dfa_first_{nullptr};
+  std::atomic<DFA*> fast_dfa_longest_{nullptr};
+  std::vector<DFA*> dfa_first_pool_;
+  std::vector<DFA*> dfa_longest_pool_;
 
   uint8_t bytemap_[256];    // map from input bytes to byte classes
-
-  absl::once_flag dfa_first_once_;
-  absl::once_flag dfa_longest_once_;
 
   Prog(const Prog&) = delete;
   Prog& operator=(const Prog&) = delete;

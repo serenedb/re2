@@ -40,10 +40,202 @@
 #include <intrin.h>
 #endif
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
 namespace re2 {
 
 // Controls the maximum count permitted by GlobalReplace(); -1 is unlimited.
 static int maximum_global_replace_count = -1;
+
+// TeddyMatcher is a specialized, highly optimized engine for literal alternation regexes
+// (e.g. "cat|dog|mouse"). It implements a variant of the "Teddy" algorithm using AVX2.
+// Unlike a standard DFA, which evaluates one byte at a time, this uses SIMD instructions
+// (pshufb) as a parallel Bloom filter to scan 32 bytes of text per iteration.
+// This allows jumping over non-matching text extremely quickly.
+//
+// NOTE: This is a simplified, hardcoded 3-byte Teddy implementation. While it performs
+// exceptionally well for our tokenizer's common use cases, it is not dynamically adaptable
+// to very short words or massive dictionaries (thousands of words). For a fully dynamic
+// and scalable solution that handles arbitrary dictionary sizes and lengths optimally,
+// integrating a dedicated regex/pattern matching library like Hyperscan (or Vectorscan)
+// should be considered in the future.
+class TeddyMatcher {
+ public:
+  // Initializes the AVX2 Bloom filter masks (table_lo/hi) for the first 3 characters 
+  // of all words in the dictionary. Each byte is split into low 4 bits and high 4 bits,
+  // mapping to a bit mask.
+  TeddyMatcher(const std::vector<std::string>& words) : words_(words) {
+#ifdef __AVX2__
+    memset(table_lo1_, 0, sizeof(table_lo1_));
+    memset(table_hi1_, 0, sizeof(table_hi1_));
+    memset(table_lo2_, 0, sizeof(table_lo2_));
+    memset(table_hi2_, 0, sizeof(table_hi2_));
+    int pair_count = 0;
+    for (const auto& w : words_) {
+      if (w.size() < 2) continue; // we only accelerate length >= 2
+      uint8_t c1 = w[0];
+      uint8_t c2 = w[1];
+      
+      int bucket = pair_count % 8;
+      table_lo1_[c1 & 0xf] |= (1 << bucket);
+      table_lo1_[(c1 & 0xf) + 16] |= (1 << bucket);
+      table_hi1_[c1 >> 4] |= (1 << bucket);
+      table_hi1_[(c1 >> 4) + 16] |= (1 << bucket);
+
+      table_lo2_[c2 & 0xf] |= (1 << bucket);
+      table_lo2_[(c2 & 0xf) + 16] |= (1 << bucket);
+      table_hi2_[c2 >> 4] |= (1 << bucket);
+      table_hi2_[(c2 >> 4) + 16] |= (1 << bucket);
+
+      if (w.size() > 2) {
+        uint8_t c3 = w[2];
+        table_lo3_[c3 & 0xf] |= (1 << bucket);
+        table_lo3_[(c3 & 0xf) + 16] |= (1 << bucket);
+        table_hi3_[c3 >> 4] |= (1 << bucket);
+        table_hi3_[(c3 >> 4) + 16] |= (1 << bucket);
+      } else {
+        // If word is 2 chars, it matches any c3
+        memset(table_lo3_, 0xff, sizeof(table_lo3_));
+        memset(table_hi3_, 0xff, sizeof(table_hi3_));
+      }
+      pair_count++;
+    }
+    v_table_lo1_ = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(table_lo1_));
+    v_table_hi1_ = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(table_hi1_));
+    v_table_lo2_ = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(table_lo2_));
+    v_table_hi2_ = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(table_hi2_));
+    v_table_lo3_ = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(table_lo3_));
+    v_table_hi3_ = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(table_hi3_));
+#endif
+  }
+
+  // Scans the text using AVX2 SIMD instructions.
+  // We process 32 bytes at a time. For each byte, we use `pshufb` to check 
+  // if the byte matches the characters present at position 1, 2, and 3 
+  // in our dictionary words. If all three positions match for a specific bucket, 
+  // we do a full scalar verification.
+  bool Match(absl::string_view text, absl::string_view* match) const {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(text.data());
+    const uint8_t* ep = p + text.size();
+    
+    // fprintf(stderr, "TeddyMatcher::Match called text size %zu\n", text.size());
+    
+#ifdef __AVX2__
+    __m256i mask_0f = _mm256_set1_epi8(0x0f);
+    while (p + 34 <= ep) {
+      __m256i chunk1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+      __m256i chunk2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + 1));
+      __m256i chunk3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + 2));
+      
+      __m256i lo1 = _mm256_and_si256(chunk1, mask_0f);
+      __m256i hi1 = _mm256_and_si256(_mm256_srli_epi16(chunk1, 4), mask_0f);
+      __m256i res_lo1 = _mm256_shuffle_epi8(v_table_lo1_, lo1);
+      __m256i res_hi1 = _mm256_shuffle_epi8(v_table_hi1_, hi1);
+      __m256i match1 = _mm256_and_si256(res_lo1, res_hi1);
+
+      __m256i lo2 = _mm256_and_si256(chunk2, mask_0f);
+      __m256i hi2 = _mm256_and_si256(_mm256_srli_epi16(chunk2, 4), mask_0f);
+      __m256i res_lo2 = _mm256_shuffle_epi8(v_table_lo2_, lo2);
+      __m256i res_hi2 = _mm256_shuffle_epi8(v_table_hi2_, hi2);
+      __m256i match2 = _mm256_and_si256(res_lo2, res_hi2);
+
+      __m256i lo3 = _mm256_and_si256(chunk3, mask_0f);
+      __m256i hi3 = _mm256_and_si256(_mm256_srli_epi16(chunk3, 4), mask_0f);
+      __m256i res_lo3 = _mm256_shuffle_epi8(v_table_lo3_, lo3);
+      __m256i res_hi3 = _mm256_shuffle_epi8(v_table_hi3_, hi3);
+      __m256i match3 = _mm256_and_si256(res_lo3, res_hi3);
+
+      __m256i match_all = _mm256_and_si256(_mm256_and_si256(match1, match2), match3);
+      
+      // Find all positions in the 32-byte chunk where the Bloom filter says 
+      // a word MIGHT start.
+      __m256i m_zero = _mm256_cmpeq_epi8(match_all, _mm256_setzero_si256());
+      int mask = ~_mm256_movemask_epi8(m_zero);
+      
+      // Iterate over potential matches (using ctz to find set bits quickly)
+      while (mask != 0) {
+        int offset = __builtin_ctz(mask);
+        const uint8_t* check_p = p + offset;
+        char c0 = check_p[0];
+        for (const auto& w : words_) {
+          if (w[0] == c0 && static_cast<size_t>(ep - check_p) >= w.size()) {
+            bool match_found = true;
+            for (size_t i = 1; i < w.size(); ++i) {
+              if (check_p[i] != w[i]) {
+                match_found = false;
+                break;
+              }
+            }
+            if (match_found) {
+              if (match) {
+                *match = absl::string_view(reinterpret_cast<const char*>(check_p), w.size());
+              }
+              return true;
+            }
+          }
+        }
+        mask &= mask - 1;
+      }
+      p += 32;
+    }
+#endif
+
+    // scalar fallback
+    while (p < ep) {
+      char c0 = p[0];
+      for (const auto& w : words_) {
+        if (w[0] == c0 && static_cast<size_t>(ep - p) >= w.size()) {
+          bool match_found = true;
+          for (size_t i = 1; i < w.size(); ++i) {
+            if (p[i] != w[i]) {
+              match_found = false;
+              break;
+            }
+          }
+          if (match_found) {
+            if (match) {
+              *match = absl::string_view(reinterpret_cast<const char*>(p), w.size());
+            }
+            return true;
+          }
+        }
+      }
+      p++;
+    }
+    
+    return false;
+  }
+
+ private:
+  std::vector<std::string> words_;
+#ifdef __AVX2__
+  // Tables for the SIMD Bloom filter.
+  // We check the first 3 characters of each word.
+  // For each character position (1, 2, 3), we have two 32-byte tables:
+  // - table_lo: maps the lower 4 bits (nibble) of a character to a bitmask of buckets.
+  // - table_hi: maps the upper 4 bits (nibble) of a character to a bitmask of buckets.
+  // By ANDing the results of pshufb on both tables, we can verify if a character
+  // belongs to any of the buckets for that position.
+  uint8_t table_lo1_[32];
+  uint8_t table_hi1_[32];
+  uint8_t table_lo2_[32];
+  uint8_t table_hi2_[32];
+  uint8_t table_lo3_[32];
+  uint8_t table_hi3_[32];
+
+  // Vectorized (AVX2) versions of the tables above. They are loaded into registers 
+  // during initialization so they can be used directly by the _mm256_shuffle_epi8 
+  // (pshufb) instruction in the hot matching loop.
+  __m256i v_table_lo1_;
+  __m256i v_table_hi1_;
+  __m256i v_table_lo2_;
+  __m256i v_table_hi2_;
+  __m256i v_table_lo3_;
+  __m256i v_table_hi3_;
+#endif
+};
 
 void RE2::FUZZING_ONLY_set_maximum_global_replace_count(int i) {
   maximum_global_replace_count = i;
@@ -207,6 +399,56 @@ int RE2::Options::ParseFlags() const {
   return flags;
 }
 
+static bool ExtractAlternationLiterals(re2::Regexp* re, std::vector<std::string>* out) {
+  if (!re) return false;
+  if (re->op() == re2::kRegexpCapture) {
+    return ExtractAlternationLiterals(re->sub()[0], out);
+  }
+  if (re->op() == re2::kRegexpAlternate) {
+    for (int i = 0; i < re->nsub(); ++i) {
+      re2::Regexp* sub = re->sub()[i];
+      if (sub->op() == re2::kRegexpLiteralString) {
+        std::string s;
+        for (int j = 0; j < sub->nrunes(); ++j) {
+          char buf[UTFmax];
+          int n = runetochar(buf, &sub->runes()[j]);
+          s.append(buf, n);
+        }
+        out->push_back(s);
+      } else if (sub->op() == re2::kRegexpLiteral) {
+        char buf[UTFmax];
+        re2::Rune r = sub->rune();
+        int n = runetochar(buf, &r);
+        out->push_back(std::string(buf, n));
+      } else if (sub->op() == re2::kRegexpConcat) {
+        std::string s;
+        for (int j = 0; j < sub->nsub(); ++j) {
+          re2::Regexp* sub2 = sub->sub()[j];
+          if (sub2->op() == re2::kRegexpLiteralString) {
+            for (int k = 0; k < sub2->nrunes(); ++k) {
+              char buf[UTFmax];
+              int n = runetochar(buf, &sub2->runes()[k]);
+              s.append(buf, n);
+            }
+          } else if (sub2->op() == re2::kRegexpLiteral) {
+            char buf[UTFmax];
+            re2::Rune r = sub2->rune();
+            int n = runetochar(buf, &r);
+            s.append(buf, n);
+          } else {
+            return false;
+          }
+        }
+        out->push_back(s);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 void RE2::Init(absl::string_view pattern, const Options& options) {
   static absl::once_flag empty_once;
   absl::call_once(empty_once, []() {
@@ -231,6 +473,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   rprog_ = NULL;
   named_groups_ = NULL;
   group_names_ = NULL;
+  teddy_matcher_ = NULL;
 
   RegexpStatus status;
   entire_regexp_ = Regexp::Parse(
@@ -281,6 +524,13 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   // and that is harder to do if the DFA has already
   // been built.
   is_one_pass_ = prog_->IsOnePass();
+
+#ifdef __AVX2__
+  std::vector<std::string> literals;
+  if (ExtractAlternationLiterals(entire_regexp_, &literals) && literals.size() > 0) {
+    teddy_matcher_ = new TeddyMatcher(literals);
+  }
+#endif
 }
 
 // Returns rprog_, computing it if needed.
@@ -313,6 +563,8 @@ RE2::~RE2() {
     delete error_arg_;
   if (error_ != empty_string())
     delete error_;
+  if (teddy_matcher_ != NULL)
+    delete teddy_matcher_;
   if (suffix_regexp_)
     suffix_regexp_->Decref();
   if (entire_regexp_)
@@ -655,6 +907,31 @@ static int ascii_strcasecmp(const char* a, const char* b, size_t len) {
 
 /***** Actual matching and rewriting code *****/
 
+bool RE2::TeddyMatch(absl::string_view text, absl::string_view* match) const {
+  if (teddy_matcher_) {
+    return teddy_matcher_->Match(text, match);
+  }
+  return false;
+}
+
+bool RE2::FastMatch(absl::string_view text, absl::string_view* match) const {
+  if (teddy_matcher_) {
+    return teddy_matcher_->Match(text, match);
+  }
+  if (prog_ == NULL) return false;
+  bool dfa_failed = false;
+  if (!prog_->SearchDFA(text, text, Prog::kUnanchored, Prog::kFirstMatch, match, &dfa_failed, NULL)) {
+    return false;
+  }
+  if (match == NULL) return true;
+  Prog* prog = ReverseProg();
+  if (prog == NULL) return false;
+  if (!prog->SearchDFA(*match, text, Prog::kAnchored, Prog::kLongestMatch, match, &dfa_failed, NULL)) {
+    return false;
+  }
+  return true;
+}
+
 bool RE2::Match(absl::string_view text,
                 size_t startpos,
                 size_t endpos,
@@ -679,6 +956,17 @@ bool RE2::Match(absl::string_view text,
   absl::string_view subtext = text;
   subtext.remove_prefix(startpos);
   subtext.remove_suffix(text.size() - endpos);
+
+  if (teddy_matcher_ && re_anchor == UNANCHORED) {
+    absl::string_view match;
+    if (teddy_matcher_->Match(subtext, &match)) {
+      if (nsubmatch > 0) {
+        submatch[0] = match;
+      }
+      return true;
+    }
+    return false;
+  }
 
   // Use DFAs to find exact location of match, filter out non-matches.
 

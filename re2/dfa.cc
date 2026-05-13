@@ -58,6 +58,25 @@
 
 namespace re2 {
 
+class DummyMutex {
+ public:
+  constexpr DummyMutex() {}
+  void Lock() {}
+  void Unlock() {}
+  void ReaderLock() {}
+  void ReaderUnlock() {}
+  void WriterLock() {}
+  void WriterUnlock() {}
+  void AssertReaderHeld() const {}
+  void AssertHeld() const {}
+};
+
+class DummyMutexLock {
+ public:
+  explicit DummyMutexLock(DummyMutex*) {}
+  ~DummyMutexLock() {}
+};
+
 // Controls whether the DFA should bail out early if the NFA would be faster.
 static bool dfa_should_bail_when_slow = true;
 
@@ -137,7 +156,7 @@ class DFA {
                         // into this state, along with kFlagMatch if this
                         // is a matching state.
 
-    std::atomic<State*> next_[];    // Outgoing arrows from State,
+    State* next_[];    // Outgoing arrows from State,
                                     // one per input byte class
   };
 
@@ -169,7 +188,7 @@ class DFA {
 
  private:
   // Make it easier to swap in a scalable reader-writer mutex.
-  using CacheMutex = absl::Mutex;
+  using CacheMutex = DummyMutex;
 
   enum {
     // Indices into start_ for unanchored searches.
@@ -270,7 +289,7 @@ class DFA {
   // AnalyzeSearch to determine the state in which to start.
   struct StartInfo {
     StartInfo() : start(NULL) {}
-    std::atomic<State*> start;
+    State* start;
   };
 
   // Fills in params->start and params->can_prefix_accel using
@@ -322,7 +341,7 @@ class DFA {
   Prog::MatchKind kind_;    // The kind of DFA.
   bool init_failed_;        // initialization failed (out of memory)
 
-  absl::Mutex mutex_;  // mutex_ >= cache_mutex_.r
+  DummyMutex mutex_;  // mutex_ >= cache_mutex_.r
 
   // Scratch areas, protected by mutex_.
   Workq* q0_;             // Two pre-allocated work queues.
@@ -454,7 +473,7 @@ DFA::DFA(Prog* prog, Prog::MatchKind kind, int64_t max_mem)
   // Note that a state stores list heads only, so we use the program
   // list count for the upper bound, not the program size.
   int nnext = prog_->bytemap_range() + 1;  // + 1 for kByteEndText slot
-  int64_t one_state = sizeof(State) + nnext*sizeof(std::atomic<State*>) +
+  int64_t one_state = sizeof(State) + nnext*sizeof(State*) +
                       (prog_->list_count()+nmark)*sizeof(int);
   if (state_budget_ < 20*one_state) {
     init_failed_ = true;
@@ -767,7 +786,7 @@ DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
   // value present takes up 1 byte hash sample plus the pointer itself.
   const int kStateCacheOverhead = 18;
   int nnext = prog_->bytemap_range() + 1;  // + 1 for kByteEndText slot
-  int mem = sizeof(State) + nnext*sizeof(std::atomic<State*>);
+  int mem = sizeof(State) + nnext*sizeof(State*);
   int instmem = ninst*sizeof(int);
   if (mem_budget_ < mem + instmem + kStateCacheOverhead) {
     mem_budget_ = -1;
@@ -781,11 +800,11 @@ DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
   // class, so the allocator can hopefully pack them better.
   char* space = std::allocator<char>().allocate(mem);
   State* s = new (space) State;
-  (void) new (s->next_) std::atomic<State*>[nnext];
+  (void) new (s->next_) State*[nnext];
   // Work around a unfortunate bug in older versions of libstdc++.
   // (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=64658)
   for (int i = 0; i < nnext; i++)
-    (void) new (s->next_ + i) std::atomic<State*>(NULL);
+    (void) new (s->next_ + i) State*(NULL);
   s->inst_ = std::allocator<int>().allocate(ninst);
   (void) new (s->inst_) int[ninst];
   memmove(s->inst_, inst, instmem);
@@ -811,7 +830,7 @@ void DFA::ClearCache() {
     // Deallocate the blob of memory that we allocated in DFA::CachedState().
     // We recompute mem in order to benefit from sized delete where possible.
     int nnext = prog_->bytemap_range() + 1;  // + 1 for kByteEndText slot
-    int mem = sizeof(State) + nnext*sizeof(std::atomic<State*>);
+    int mem = sizeof(State) + nnext*sizeof(State*);
     std::allocator<char>().deallocate(reinterpret_cast<char*>(*tmp), mem);
   }
   state_cache_.clear();
@@ -1015,7 +1034,7 @@ void DFA::RunWorkqOnByte(Workq* oldq, Workq* newq,
 DFA::State* DFA::RunStateOnByteUnlocked(State* state, int c) {
   // Keep only one RunStateOnByte going
   // even if the DFA is being run by multiple threads.
-  absl::MutexLock l(&mutex_);
+  DummyMutexLock l(&mutex_);
   return RunStateOnByte(state, c);
 }
 
@@ -1044,7 +1063,7 @@ DFA::State* DFA::RunStateOnByte(State* state, int c) {
   }
 
   // If someone else already computed this, return it.
-  State* ns = state->next_[ByteMap(c)].load(std::memory_order_relaxed);
+  State* ns = state->next_[ByteMap(c)];
   if (ns != NULL)
     return ns;
 
@@ -1109,7 +1128,7 @@ DFA::State* DFA::RunStateOnByte(State* state, int c) {
   // Write barrier before updating state->next_ so that the
   // main search loop can proceed without any locking, for speed.
   // (Otherwise it would need one mutex operation per input byte.)
-  state->next_[ByteMap(c)].store(ns, std::memory_order_release);
+  state->next_[ByteMap(c)] = ns;
   return ns;
 }
 
@@ -1195,7 +1214,7 @@ void DFA::ResetCache(RWLocker* cache_lock) {
 
   // Clear the cache, reset the memory budget.
   for (int i = 0; i < kMaxStart; i++)
-    start_[i].start.store(NULL, std::memory_order_relaxed);
+    start_[i].start = NULL;
   ClearCache();
   mem_budget_ = state_budget_;
 }
@@ -1267,7 +1286,7 @@ DFA::StateSaver::~StateSaver() {
 DFA::State* DFA::StateSaver::Restore() {
   if (is_special_)
     return special_;
-  absl::MutexLock l(&dfa_->mutex_);
+  DummyMutexLock l(&dfa_->mutex_);
   State* s = dfa_->CachedState(inst_, ninst_, flag_);
   if (s == NULL)
     ABSL_LOG(DFATAL) << "StateSaver failed to restore state.";
@@ -1423,57 +1442,42 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params) {
     // Okay to use bytemap[] not ByteMap() here, because
     // c is known to be an actual byte and not kByteEndText.
 
-    State* ns = s->next_[bytemap[c]].load(std::memory_order_acquire);
-    if (ns == NULL) {
-      ns = RunStateOnByteUnlocked(s, c);
+    State* ns = s->next_[bytemap[c]];
+    if (ns <= SpecialStateMax) {
       if (ns == NULL) {
-        // After we reset the cache, we hold cache_mutex exclusively,
-        // so if resetp != NULL, it means we filled the DFA state
-        // cache with this search alone (without any other threads).
-        // Benchmarks show that doing a state computation on every
-        // byte runs at about 0.2 MB/s, while the NFA (nfa.cc) can do the
-        // same at about 2 MB/s.  Unless we're processing an average
-        // of 10 bytes per state computation, fail so that RE2 can
-        // fall back to the NFA.  However, RE2::Set cannot fall back,
-        // so we just have to keep on keeping on in that case.
-        if (dfa_should_bail_when_slow && resetp != NULL &&
-            static_cast<size_t>(p - resetp) < 10*state_cache_.size() &&
-            kind_ != Prog::kManyMatch) {
-          params->failed = true;
-          return false;
-        }
-        resetp = p;
-
-        // Prepare to save start and s across the reset.
-        StateSaver save_start(this, start);
-        StateSaver save_s(this, s);
-
-        // Discard all the States in the cache.
-        ResetCache(params->cache_lock);
-
-        // Restore start and s so we can continue.
-        if ((start = save_start.Restore()) == NULL ||
-            (s = save_s.Restore()) == NULL) {
-          // Restore already did ABSL_LOG(DFATAL).
-          params->failed = true;
-          return false;
-        }
         ns = RunStateOnByteUnlocked(s, c);
         if (ns == NULL) {
-          ABSL_LOG(DFATAL) << "RunStateOnByteUnlocked failed after ResetCache";
-          params->failed = true;
-          return false;
+          if (dfa_should_bail_when_slow && resetp != NULL &&
+              static_cast<size_t>(p - resetp) < 10*state_cache_.size() &&
+              kind_ != Prog::kManyMatch) {
+            params->failed = true;
+            return false;
+          }
+          resetp = p;
+          StateSaver save_start(this, start);
+          StateSaver save_s(this, s);
+          ResetCache(params->cache_lock);
+          if ((start = save_start.Restore()) == NULL ||
+              (s = save_s.Restore()) == NULL) {
+            params->failed = true;
+            return false;
+          }
+          ns = RunStateOnByteUnlocked(s, c);
+          if (ns == NULL) {
+            ABSL_LOG(DFATAL) << "RunStateOnByteUnlocked failed after ResetCache";
+            params->failed = true;
+            return false;
+          }
         }
       }
-    }
-    if (ns <= SpecialStateMax) {
-      if (ns == DeadState) {
-        params->ep = reinterpret_cast<const char*>(lastmatch);
-        return matched;
+      if (ns <= SpecialStateMax) {
+        if (ns == DeadState) {
+          params->ep = reinterpret_cast<const char*>(lastmatch);
+          return matched;
+        }
+        params->ep = reinterpret_cast<const char*>(ep);
+        return true;
       }
-      // FullMatchState
-      params->ep = reinterpret_cast<const char*>(ep);
-      return true;
     }
 
     s = ns;
@@ -1520,32 +1524,33 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params) {
       lastbyte = BeginPtr(params->text)[-1] & 0xFF;
   }
 
-  State* ns = s->next_[ByteMap(lastbyte)].load(std::memory_order_acquire);
-  if (ns == NULL) {
-    ns = RunStateOnByteUnlocked(s, lastbyte);
+  State* ns = s->next_[ByteMap(lastbyte)];
+  if (ns <= SpecialStateMax) {
     if (ns == NULL) {
-      StateSaver save_s(this, s);
-      ResetCache(params->cache_lock);
-      if ((s = save_s.Restore()) == NULL) {
-        params->failed = true;
-        return false;
-      }
       ns = RunStateOnByteUnlocked(s, lastbyte);
       if (ns == NULL) {
-        ABSL_LOG(DFATAL) << "RunStateOnByteUnlocked failed after Reset";
-        params->failed = true;
-        return false;
+        StateSaver save_s(this, s);
+        ResetCache(params->cache_lock);
+        if ((s = save_s.Restore()) == NULL) {
+          params->failed = true;
+          return false;
+        }
+        ns = RunStateOnByteUnlocked(s, lastbyte);
+        if (ns == NULL) {
+          ABSL_LOG(DFATAL) << "RunStateOnByteUnlocked failed after Reset";
+          params->failed = true;
+          return false;
+        }
       }
     }
-  }
-  if (ns <= SpecialStateMax) {
-    if (ns == DeadState) {
-      params->ep = reinterpret_cast<const char*>(lastmatch);
-      return matched;
+    if (ns <= SpecialStateMax) {
+      if (ns == DeadState) {
+        params->ep = reinterpret_cast<const char*>(lastmatch);
+        return matched;
+      }
+      params->ep = reinterpret_cast<const char*>(ep);
+      return true;
     }
-    // FullMatchState
-    params->ep = reinterpret_cast<const char*>(ep);
-    return true;
   }
 
   s = ns;
@@ -1702,7 +1707,7 @@ bool DFA::AnalyzeSearch(SearchParams* params) {
     }
   }
 
-  params->start = info->start.load(std::memory_order_acquire);
+  params->start = info->start;
 
   // Even if we could prefix accel, we cannot do so when anchored and,
   // less obviously, we cannot do so when we are going to need flags.
@@ -1726,12 +1731,12 @@ bool DFA::AnalyzeSearch(SearchParams* params) {
 bool DFA::AnalyzeSearchHelper(SearchParams* params, StartInfo* info,
                               uint32_t flags) {
   // Quick check.
-  State* start = info->start.load(std::memory_order_acquire);
+  State* start = info->start;
   if (start != NULL)
     return true;
 
-  absl::MutexLock l(&mutex_);
-  start = info->start.load(std::memory_order_relaxed);
+  DummyMutexLock l(&mutex_);
+  start = info->start;
   if (start != NULL)
     return true;
 
@@ -1744,7 +1749,7 @@ bool DFA::AnalyzeSearchHelper(SearchParams* params, StartInfo* info,
     return false;
 
   // Synchronize with "quick check" above.
-  info->start.store(start, std::memory_order_release);
+  info->start = start;
   return true;
 }
 
@@ -1799,6 +1804,29 @@ bool DFA::Search(absl::string_view text, absl::string_view context,
 }
 
 DFA* Prog::GetDFA(MatchKind kind) {
+  if (kind == kFirstMatch) {
+    DFA* dfa = fast_dfa_first_.exchange(nullptr, std::memory_order_acquire);
+    if (dfa) return dfa;
+  } else if (kind == kLongestMatch) {
+    DFA* dfa = fast_dfa_longest_.exchange(nullptr, std::memory_order_acquire);
+    if (dfa) return dfa;
+  }
+
+  absl::MutexLock l(&dfa_pool_mutex_);
+  if (kind == kFirstMatch || kind == kManyMatch) {
+    if (!dfa_first_pool_.empty()) {
+      DFA* dfa = dfa_first_pool_.back();
+      dfa_first_pool_.pop_back();
+      return dfa;
+    }
+  } else {
+    if (!dfa_longest_pool_.empty()) {
+      DFA* dfa = dfa_longest_pool_.back();
+      dfa_longest_pool_.pop_back();
+      return dfa;
+    }
+  }
+
   // For a forward DFA, half the memory goes to each DFA.
   // However, if it is a "many match" DFA, then there is
   // no counterpart with which the memory must be shared.
@@ -1807,23 +1835,35 @@ DFA* Prog::GetDFA(MatchKind kind) {
   // "longest match" DFA, because RE2 never does reverse
   // "first match" searches.
   if (kind == kFirstMatch) {
-    absl::call_once(dfa_first_once_, [](Prog* prog) {
-      prog->dfa_first_ = new DFA(prog, kFirstMatch, prog->dfa_mem_ / 2);
-    }, this);
-    return dfa_first_;
+    return new DFA(this, kFirstMatch, dfa_mem_ / 2);
   } else if (kind == kManyMatch) {
-    absl::call_once(dfa_first_once_, [](Prog* prog) {
-      prog->dfa_first_ = new DFA(prog, kManyMatch, prog->dfa_mem_);
-    }, this);
-    return dfa_first_;
+    return new DFA(this, kManyMatch, dfa_mem_);
   } else {
-    absl::call_once(dfa_longest_once_, [](Prog* prog) {
-      if (!prog->reversed_)
-        prog->dfa_longest_ = new DFA(prog, kLongestMatch, prog->dfa_mem_ / 2);
-      else
-        prog->dfa_longest_ = new DFA(prog, kLongestMatch, prog->dfa_mem_);
-    }, this);
-    return dfa_longest_;
+    if (!reversed_)
+      return new DFA(this, kLongestMatch, dfa_mem_ / 2);
+    else
+      return new DFA(this, kLongestMatch, dfa_mem_);
+  }
+}
+
+void Prog::PutDFA(DFA* dfa) {
+  if (dfa->kind() == kFirstMatch) {
+    DFA* expected = nullptr;
+    if (fast_dfa_first_.compare_exchange_strong(expected, dfa, std::memory_order_release)) {
+      return;
+    }
+  } else if (dfa->kind() == kLongestMatch) {
+    DFA* expected = nullptr;
+    if (fast_dfa_longest_.compare_exchange_strong(expected, dfa, std::memory_order_release)) {
+      return;
+    }
+  }
+
+  absl::MutexLock l(&dfa_pool_mutex_);
+  if (dfa->kind() == kFirstMatch || dfa->kind() == kManyMatch) {
+    dfa_first_pool_.push_back(dfa);
+  } else {
+    dfa_longest_pool_.push_back(dfa);
   }
 }
 
@@ -1889,6 +1929,7 @@ bool Prog::SearchDFA(absl::string_view text, absl::string_view context,
   bool matched = dfa->Search(text, context, anchored,
                              want_earliest_match, !reversed_,
                              failed, &ep, matches);
+  PutDFA(dfa);
   if (*failed) {
     hooks::GetDFASearchFailureHook()({
         // Nothing yet...
@@ -1984,7 +2025,10 @@ int DFA::BuildAllStates(const Prog::DFAStateCallback& cb) {
 
 // Build out all states in DFA for kind.  Returns number of states.
 int Prog::BuildEntireDFA(MatchKind kind, const DFAStateCallback& cb) {
-  return GetDFA(kind)->BuildAllStates(cb);
+  DFA* dfa = GetDFA(kind);
+  int n = dfa->BuildAllStates(cb);
+  PutDFA(dfa);
+  return n;
 }
 
 // Computes min and max for matching string.
@@ -2050,7 +2094,7 @@ bool DFA::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
   // Build minimum prefix.
   State* s = params.start;
   min->clear();
-  absl::MutexLock lock(&mutex_);
+  DummyMutexLock lock(&mutex_);
   for (int i = 0; i < maxlen; i++) {
     if (previously_visited_states[s] > kMaxEltRepetitions)
       break;
@@ -2129,7 +2173,72 @@ bool DFA::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
 bool Prog::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
   // Have to use dfa_longest_ to get all strings for full matches.
   // For example, (a|aa) never matches aa in first-match mode.
-  return GetDFA(kLongestMatch)->PossibleMatchRange(min, max, maxlen);
+  DFA* dfa = GetDFA(kLongestMatch);
+  bool ret = dfa->PossibleMatchRange(min, max, maxlen);
+  PutDFA(dfa);
+  return ret;
+}
+
+RE2::TokenizerState::TokenizerState(const RE2* re) : re_(re), dfa_(nullptr), r_dfa_(nullptr) {
+  if (re_->prog_) {
+    dfa_ = re_->prog_->GetDFA(Prog::kFirstMatch);
+  }
+  Prog* r_prog = re_->ReverseProg();
+  if (r_prog) {
+    r_dfa_ = r_prog->GetDFA(Prog::kLongestMatch);
+  }
+}
+
+RE2::TokenizerState::~TokenizerState() {
+  if (re_->prog_ && dfa_) {
+    re_->prog_->PutDFA(dfa_);
+  }
+  Prog* r_prog = re_->ReverseProg();
+  if (r_prog && r_dfa_) {
+    r_prog->PutDFA(r_dfa_);
+  }
+}
+
+bool RE2::TokenizerState::Match(absl::string_view text, size_t startpos, absl::string_view* match) {
+  if (!re_->ok()) return false;
+  if (startpos > text.size()) return false;
+
+  if (!dfa_) return false;
+
+  absl::string_view subtext = text.substr(startpos);
+
+  bool failed = false;
+  const char* ep = nullptr;
+
+  // We want the longest match, so want_earliest_match = false
+  bool ret = dfa_->Search(subtext, subtext, false, false, true, &failed, &ep, nullptr);
+  if (failed) {
+    // Fallback if DFA failed (e.g. out of memory)
+    return re_->Match(text, startpos, text.size(), RE2::UNANCHORED, match, 1);
+  }
+  if (!ret || ep == nullptr) {
+    return false;
+  }
+
+  if (!r_dfa_) {
+    return re_->Match(text, startpos, text.size(), RE2::UNANCHORED, match, 1);
+  }
+
+  absl::string_view r_text(subtext.data(), ep - subtext.data());
+  const char* rep = nullptr;
+  bool r_failed = false;
+
+  bool r_ret = r_dfa_->Search(r_text, subtext, true, false, false, &r_failed, &rep, nullptr);
+  if (r_failed) {
+    return re_->Match(text, startpos, text.size(), RE2::UNANCHORED, match, 1);
+  }
+
+  if (r_ret && rep != nullptr) {
+    *match = absl::string_view(rep, ep - rep);
+    return true;
+  }
+  
+  return false;
 }
 
 }  // namespace re2

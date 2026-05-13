@@ -29,8 +29,8 @@ ABSL_FLAG(int, threads, 4, "number of threads");
 
 namespace re2 {
 
-static int state_cache_resets = 0;
-static int search_failures = 0;
+static std::atomic<int> state_cache_resets = 0;
+static std::atomic<int> search_failures = 0;
 
 struct SetHooks {
   SetHooks() {
