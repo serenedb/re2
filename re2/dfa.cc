@@ -167,6 +167,9 @@ class DFA {
 
   typedef absl::flat_hash_set<State*, StateHash, StateEqual> StateSet;
 
+  // Drives this DFA one byte at a time on behalf of Prog::DFAWalk.
+  friend class DFAWalker;
+
  private:
   // Make it easier to swap in a scalable reader-writer mutex.
   using CacheMutex = absl::Mutex;
@@ -2130,6 +2133,95 @@ bool Prog::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
   // Have to use dfa_longest_ to get all strings for full matches.
   // For example, (a|aa) never matches aa in first-match mode.
   return GetDFA(kLongestMatch)->PossibleMatchRange(min, max, maxlen);
+}
+
+// Holds both of the DFA's locks for as long as the walk lives. That is what
+// keeps a caller's State* valid: under mutex_ every step goes through
+// RunStateOnByte, which returns NULL when the state budget is spent instead of
+// resetting the cache the way RunStateOnByteUnlocked does. The same locking
+// PossibleMatchRange uses, held across many steps rather than one call.
+class DFAWalker {
+ public:
+  // DeadState and friends cast to an unqualified State*.
+  using State = DFA::State;
+
+  // The start state comes from an anchored search over an empty text: the flags
+  // an empty context carries are exactly the ones a whole-string match begins
+  // with. It is computed before the walk claims mutex_ for the rest of its
+  // life, because AnalyzeSearch takes that mutex itself.
+  explicit DFAWalker(DFA* dfa) : dfa_(dfa), cache_lock_(&dfa->cache_mutex_) {
+    DFA::SearchParams params(absl::string_view(), absl::string_view(),
+                             &cache_lock_);
+    params.anchored = true;
+    if (dfa_->AnalyzeSearch(&params) && params.start != DeadState)
+      start_ = params.start;
+    dfa_->mutex_.Lock();
+  }
+
+  ~DFAWalker() { dfa_->mutex_.Unlock(); }
+
+  DFAWalker(const DFAWalker&) = delete;
+  DFAWalker& operator=(const DFAWalker&) = delete;
+
+  State* start() const { return start_; }
+
+  State* Step(State* state, int c) {
+    State* ns = dfa_->RunStateOnByte(state, c);
+    return Live(ns) ? ns : NULL;
+  }
+
+  bool IsMatch(State* state) {
+    // The match is recorded on the way out of the imaginary end-of-text byte,
+    // which is what makes this "the input ends here" rather than "some prefix
+    // matched".
+    State* ns = dfa_->RunStateOnByte(state, DFA::kByteEndText);
+    if (ns == NULL || ns == DeadState)
+      return false;
+    return ns == FullMatchState || ns->IsMatch();
+  }
+
+  int NextByte(State* state, int c) {
+    for (int j = c + 1; j < 256; j++) {
+      if (Live(dfa_->RunStateOnByte(state, j)))
+        return j;
+    }
+    return -1;
+  }
+
+ private:
+  // The same liveness test PossibleMatchRange applies: NULL is out of memory,
+  // DeadState has no threads left, and a state with no instructions exists only
+  // to record that the previous byte matched, so nothing extends through it.
+  static bool Live(State* s) {
+    return s == FullMatchState || (s > SpecialStateMax && s->ninst_ > 0);
+  }
+
+  DFA* dfa_;
+  DFA::RWLocker cache_lock_;
+  State* start_ = NULL;
+};
+
+Prog::DFAWalk::DFAWalk(Prog* prog) : walker_(NULL), start_(NULL) {
+  DFA* dfa = prog->GetDFA(kLongestMatch);
+  if (!dfa->ok())
+    return;
+  walker_ = new DFAWalker(dfa);
+  start_ = walker_->start();
+}
+
+Prog::DFAWalk::~DFAWalk() { delete walker_; }
+
+const void* Prog::DFAWalk::Step(const void* state, int c) {
+  return walker_->Step(static_cast<DFA::State*>(const_cast<void*>(state)), c);
+}
+
+bool Prog::DFAWalk::IsMatch(const void* state) {
+  return walker_->IsMatch(static_cast<DFA::State*>(const_cast<void*>(state)));
+}
+
+int Prog::DFAWalk::NextByte(const void* state, int c) {
+  return walker_->NextByte(static_cast<DFA::State*>(const_cast<void*>(state)),
+                           c);
 }
 
 }  // namespace re2

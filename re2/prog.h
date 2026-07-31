@@ -53,6 +53,7 @@ enum EmptyOp {
 };
 
 class DFA;
+class DFAWalker;
 class Regexp;
 
 // Compiled form of regexp program.
@@ -386,6 +387,46 @@ class Prog {
   //
   // Returns true on success, false on error.
   bool PossibleMatchRange(std::string* min, std::string* max, int maxlen);
+
+  // Byte-at-a-time walk of the anchored lazy DFA, for a caller that drives the
+  // automaton over its own data -- intersecting it with a sorted dictionary,
+  // say -- instead of handing it a contiguous string.
+  //
+  // Opaque state handles stay valid for the walk's whole lifetime: the walk
+  // holds the DFA's locks, so every step goes through the path that reports
+  // exhaustion rather than the one that resets the state cache. One walk at a
+  // time per Prog, and not thread-safe; other users of the same Prog block
+  // until it is destroyed.
+  class DFAWalk {
+   public:
+    explicit DFAWalk(Prog* prog);
+    ~DFAWalk();
+
+    DFAWalk(const DFAWalk&) = delete;
+    DFAWalk& operator=(const DFAWalk&) = delete;
+
+    // Start state of an anchored match. NULL when the DFA could not be built
+    // or nothing matches at all, in which case the walk must not be used.
+    const void* start() const { return start_; }
+
+    // State reached from state on byte c in [0, 256), or NULL when that byte
+    // leaves no live thread or the DFA ran out of memory. Same answer for the
+    // same arguments; the DFA memoizes it.
+    const void* Step(const void* state, int c);
+
+    // Whether the bytes consumed to reach state are a whole match, i.e. the
+    // match ends here as well as beginning at the start of the input.
+    bool IsMatch(const void* state);
+
+    // Smallest byte strictly greater than c that leaves state live, or -1 when
+    // no byte does. Pass -1 for c to ask for the smallest byte overall. This is
+    // the min-successor step PossibleMatchRange builds its minimum prefix from.
+    int NextByte(const void* state, int c);
+
+   private:
+    DFAWalker* walker_;
+    const void* start_;
+  };
 
   // Outputs the program fanout into the given sparse array.
   void Fanout(SparseArray<int>* fanout);
