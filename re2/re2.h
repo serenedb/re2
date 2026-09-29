@@ -796,6 +796,7 @@ class RE2 {
   bool is_one_pass_ : 1;          // can use prog_->SearchOnePass?
   bool prefix_foldcase_ : 1;      // prefix_ is ASCII case-insensitive
   std::string prefix_;            // required prefix (before suffix_regexp_)
+  std::string required_literal_;
   re2::Prog* prog_;               // compiled program for regexp
 
   // Reverse Prog for DFA execution only
