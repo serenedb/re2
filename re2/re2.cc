@@ -207,6 +207,50 @@ int RE2::Options::ParseFlags() const {
   return flags;
 }
 
+static std::string RequiredLiteral(Regexp* re) {
+  while (re->op() == kRegexpCapture)
+    re = re->sub()[0];
+  Regexp** subs = &re;
+  int nsub = 1;
+  if (re->op() == kRegexpConcat) {
+    subs = re->sub();
+    nsub = re->nsub();
+  }
+  std::string best;
+  std::string run;
+  auto flush = [&]() {
+    if (run.size() > best.size())
+      best = run;
+    run.clear();
+  };
+  auto append = [&](Regexp* literal, Rune r) {
+    if ((literal->parse_flags() & Regexp::FoldCase) && r < Runeself &&
+        absl::ascii_isalpha(static_cast<unsigned char>(r))) {
+      flush();
+    } else if (literal->parse_flags() & Regexp::Latin1) {
+      run += static_cast<char>(r);
+    } else {
+      char buf[UTFmax];
+      run.append(buf, runetochar(buf, &r));
+    }
+  };
+  for (int i = 0; i < nsub; i++) {
+    Regexp* sub = subs[i];
+    while (sub->op() == kRegexpCapture)
+      sub = sub->sub()[0];
+    if (sub->op() == kRegexpLiteral) {
+      append(sub, sub->rune());
+    } else if (sub->op() == kRegexpLiteralString) {
+      for (int j = 0; j < sub->nrunes(); j++)
+        append(sub, sub->runes()[j]);
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return best;
+}
+
 void RE2::Init(absl::string_view pattern, const Options& options) {
   static absl::once_flag empty_once;
   absl::call_once(empty_once, []() {
@@ -226,6 +270,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   is_one_pass_ = false;
   prefix_foldcase_ = false;
   prefix_.clear();
+  required_literal_.clear();
   prog_ = NULL;
 
   rprog_ = NULL;
@@ -281,6 +326,10 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   // and that is harder to do if the DFA has already
   // been built.
   is_one_pass_ = prog_->IsOnePass();
+
+  if (!prog_->anchor_start() && !prog_->anchor_end() &&
+      !prog_->can_prefix_accel())
+    required_literal_ = RequiredLiteral(suffix_regexp_);
 }
 
 // Returns rprog_, computing it if needed.
@@ -775,6 +824,10 @@ bool RE2::Match(absl::string_view text,
           return true;
         break;
       }
+
+      if (!required_literal_.empty() &&
+          subtext.find(required_literal_) == absl::string_view::npos)
+        return false;
 
       if (!prog_->SearchDFA(subtext, text, anchor, kind,
                             matchp, &dfa_failed, NULL)) {
