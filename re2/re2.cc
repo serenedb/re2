@@ -332,7 +332,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   is_one_pass_ = prog_->IsOnePass();
 
   if (!prog_->anchor_start() && !prog_->anchor_end() &&
-      !prog_->can_prefix_accel())
+      !prog_->literal_prefix_accel())
     required_literal_ = RequiredLiteral(suffix_regexp_);
   required_finder_ = LiteralFinder(required_literal_);
   segment_plan_ = SegmentPlan::Make(entire_regexp_);
