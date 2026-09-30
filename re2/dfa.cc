@@ -31,6 +31,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -69,10 +70,21 @@ void Prog::TESTING_ONLY_set_dfa_should_bail_when_slow(bool b) {
 // Generates a lot of output -- only useful for debugging.
 static const bool ExtraDebug = false;
 
+class NoMutex {
+ public:
+  void Lock() {}
+  void Unlock() {}
+  void ReaderLock() {}
+  void ReaderUnlock() {}
+  void WriterLock() {}
+  void WriterUnlock() {}
+};
+
 // A DFA implementation of a regular expression program.
 // Since this is entirely a forward declaration mandated by C++,
 // some of the comments here are better understood after reading
 // the comments in the sections that follow the DFA definition.
+template <bool kThreadSafe>
 class DFA {
  public:
   DFA(Prog* prog, Prog::MatchKind kind, int64_t max_mem);
@@ -168,8 +180,25 @@ class DFA {
   typedef absl::flat_hash_set<State*, StateHash, StateEqual> StateSet;
 
  private:
+  using Mutex = std::conditional_t<kThreadSafe, absl::Mutex, NoMutex>;
   // Make it easier to swap in a scalable reader-writer mutex.
-  using CacheMutex = absl::Mutex;
+  using CacheMutex = Mutex;
+
+  static constexpr std::memory_order kAcquire =
+      kThreadSafe ? std::memory_order_acquire : std::memory_order_relaxed;
+  static constexpr std::memory_order kRelease =
+      kThreadSafe ? std::memory_order_release : std::memory_order_relaxed;
+
+  class Locker {
+   public:
+    explicit Locker(Mutex& mu) ABSL_NO_THREAD_SAFETY_ANALYSIS : mu_(mu) {
+      mu_.Lock();
+    }
+    ~Locker() ABSL_NO_THREAD_SAFETY_ANALYSIS { mu_.Unlock(); }
+
+   private:
+    Mutex& mu_;
+  };
 
   enum {
     // Indices into start_ for unanchored searches.
@@ -322,7 +351,7 @@ class DFA {
   Prog::MatchKind kind_;    // The kind of DFA.
   bool init_failed_;        // initialization failed (out of memory)
 
-  absl::Mutex mutex_;  // mutex_ >= cache_mutex_.r
+  Mutex mutex_;  // mutex_ >= cache_mutex_.r
 
   // Scratch areas, protected by mutex_.
   Workq* q0_;             // Two pre-allocated work queues.
@@ -365,7 +394,8 @@ static inline const uint8_t* BytePtr(const void* v) {
 // In leftmost longest mode, marks separate sections
 // of workq that started executing at different
 // locations in the string (earlier locations first).
-class DFA::Workq : public SparseSet {
+template <bool kThreadSafe>
+class DFA<kThreadSafe>::Workq : public SparseSet {
  public:
   // Constructor: n is number of normal slots, maxmark number of mark slots.
   Workq(int n, int maxmark) :
@@ -417,7 +447,8 @@ class DFA::Workq : public SparseSet {
   Workq& operator=(const Workq&) = delete;
 };
 
-DFA::DFA(Prog* prog, Prog::MatchKind kind, int64_t max_mem)
+template <bool kThreadSafe>
+DFA<kThreadSafe>::DFA(Prog* prog, Prog::MatchKind kind, int64_t max_mem)
   : prog_(prog),
     kind_(kind),
     init_failed_(false),
@@ -466,7 +497,8 @@ DFA::DFA(Prog* prog, Prog::MatchKind kind, int64_t max_mem)
   stack_ = PODArray<int>(nstack);
 }
 
-DFA::~DFA() {
+template <bool kThreadSafe>
+DFA<kThreadSafe>::~DFA() {
   delete q0_;
   delete q1_;
   ClearCache();
@@ -487,10 +519,11 @@ DFA::~DFA() {
 // Debugging printouts
 
 // For debugging, returns a string representation of the work queue.
-std::string DFA::DumpWorkq(Workq* q) {
+template <bool kThreadSafe>
+std::string DFA<kThreadSafe>::DumpWorkq(Workq* q) {
   std::string s;
   const char* sep = "";
-  for (Workq::iterator it = q->begin(); it != q->end(); ++it) {
+  for (typename Workq::iterator it = q->begin(); it != q->end(); ++it) {
     if (q->is_mark(*it)) {
       s += "|";
       sep = "";
@@ -503,7 +536,8 @@ std::string DFA::DumpWorkq(Workq* q) {
 }
 
 // For debugging, returns a string representation of the state.
-std::string DFA::DumpState(State* state) {
+template <bool kThreadSafe>
+std::string DFA<kThreadSafe>::DumpState(State* state) {
   if (state == NULL)
     return "_";
   if (state == DeadState)
@@ -589,7 +623,9 @@ std::string DFA::DumpState(State* state) {
 // inserts it in the cache, and returns it.
 // If mq is not null, MatchSep and the match IDs in mq will be appended
 // to the State.
-DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
+template <bool kThreadSafe>
+typename DFA<kThreadSafe>::State* DFA<kThreadSafe>::WorkqToCachedState(
+    Workq* q, Workq* mq, uint32_t flag) {
   //mutex_.AssertHeld();
 
   // Construct array of instruction ids for the new state.
@@ -622,7 +658,7 @@ DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
   bool sawmark = false;    // whether queue contains a Mark
   if (ExtraDebug)
     absl::FPrintF(stderr, "WorkqToCachedState %s [%#x]", DumpWorkq(q), flag);
-  for (Workq::iterator it = q->begin(); it != q->end(); ++it) {
+  for (typename Workq::iterator it = q->begin(); it != q->end(); ++it) {
     int id = *it;
     if (sawmatch && (kind_ == Prog::kFirstMatch || q->is_mark(id)))
       break;
@@ -725,7 +761,7 @@ DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
   // Append MatchSep and the match IDs in mq if necessary.
   if (mq != NULL) {
     inst[n++] = MatchSep;
-    for (Workq::iterator i = mq->begin(); i != mq->end(); ++i) {
+    for (typename Workq::iterator i = mq->begin(); i != mq->end(); ++i) {
       int id = *i;
       Prog::Inst* ip = prog_->inst(id);
       if (ip->opcode() == kInstMatch)
@@ -743,7 +779,9 @@ DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
 // Looks in the State cache for a State matching inst, ninst, flag.
 // If one is found, returns it.  If one is not found, allocates one,
 // inserts it in the cache, and returns it.
-DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
+template <bool kThreadSafe>
+typename DFA<kThreadSafe>::State* DFA<kThreadSafe>::CachedState(
+    int* inst, int ninst, uint32_t flag) {
   //mutex_.AssertHeld();
 
   // Look in the cache for a pre-existing state.
@@ -753,7 +791,7 @@ DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
   state.inst_ = inst;
   state.ninst_ = ninst;
   state.flag_ = flag;
-  StateSet::iterator it = state_cache_.find(&state);
+  typename StateSet::iterator it = state_cache_.find(&state);
   if (it != state_cache_.end()) {
     if (ExtraDebug)
       absl::FPrintF(stderr, " -cached-> %s\n", DumpState(*it));
@@ -800,11 +838,12 @@ DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
 }
 
 // Clear the cache.  Must hold cache_mutex_.w or be in destructor.
-void DFA::ClearCache() {
-  StateSet::iterator begin = state_cache_.begin();
-  StateSet::iterator end = state_cache_.end();
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::ClearCache() {
+  typename StateSet::iterator begin = state_cache_.begin();
+  typename StateSet::iterator end = state_cache_.end();
   while (begin != end) {
-    StateSet::iterator tmp = begin;
+    typename StateSet::iterator tmp = begin;
     ++begin;
     // Deallocate the instruction array, which is stored separately as above.
     std::allocator<int>().deallocate((*tmp)->inst_, (*tmp)->ninst_);
@@ -818,7 +857,8 @@ void DFA::ClearCache() {
 }
 
 // Copies insts in state s to the work queue q.
-void DFA::StateToWorkq(State* s, Workq* q) {
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::StateToWorkq(State* s, Workq* q) {
   q->clear();
   for (int i = 0; i < s->ninst_; i++) {
     if (s->inst_[i] == Mark) {
@@ -834,7 +874,8 @@ void DFA::StateToWorkq(State* s, Workq* q) {
 }
 
 // Adds ip to the work queue, following empty arrows according to flag.
-void DFA::AddToQueue(Workq* q, int id, uint32_t flag) {
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::AddToQueue(Workq* q, int id, uint32_t flag) {
 
   // Use stack_ to hold our stack of instructions yet to process.
   // It was preallocated as follows:
@@ -934,9 +975,11 @@ void DFA::AddToQueue(Workq* q, int id, uint32_t flag) {
 // and then processing only $.  Doing the two-step sequence won't match
 // ^$^$^$ but processing ^ and $ simultaneously will (and is the behavior
 // exhibited by existing implementations).
-void DFA::RunWorkqOnEmptyString(Workq* oldq, Workq* newq, uint32_t flag) {
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::RunWorkqOnEmptyString(Workq* oldq, Workq* newq,
+                                             uint32_t flag) {
   newq->clear();
-  for (Workq::iterator i = oldq->begin(); i != oldq->end(); ++i) {
+  for (typename Workq::iterator i = oldq->begin(); i != oldq->end(); ++i) {
     if (oldq->is_mark(*i))
       AddToQueue(newq, Mark, flag);
     else
@@ -948,12 +991,13 @@ void DFA::RunWorkqOnEmptyString(Workq* oldq, Workq* newq, uint32_t flag) {
 // strings indicated by flag.  For example, c == 'a' and flag == kEmptyEndLine,
 // means to match c$.  Sets the bool *ismatch to true if the end of the
 // regular expression program has been reached (the regexp has matched).
-void DFA::RunWorkqOnByte(Workq* oldq, Workq* newq,
-                         int c, uint32_t flag, bool* ismatch) {
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::RunWorkqOnByte(Workq* oldq, Workq* newq,
+                                      int c, uint32_t flag, bool* ismatch) {
   //mutex_.AssertHeld();
 
   newq->clear();
-  for (Workq::iterator i = oldq->begin(); i != oldq->end(); ++i) {
+  for (typename Workq::iterator i = oldq->begin(); i != oldq->end(); ++i) {
     if (oldq->is_mark(*i)) {
       if (*ismatch)
         return;
@@ -1012,15 +1056,19 @@ void DFA::RunWorkqOnByte(Workq* oldq, Workq* newq,
 
 // Processes input byte c in state, returning new state.
 // Caller does not hold mutex.
-DFA::State* DFA::RunStateOnByteUnlocked(State* state, int c) {
+template <bool kThreadSafe>
+typename DFA<kThreadSafe>::State* DFA<kThreadSafe>::RunStateOnByteUnlocked(
+    State* state, int c) {
   // Keep only one RunStateOnByte going
   // even if the DFA is being run by multiple threads.
-  absl::MutexLock l(mutex_);
+  Locker l(mutex_);
   return RunStateOnByte(state, c);
 }
 
 // Processes input byte c in state, returning new state.
-DFA::State* DFA::RunStateOnByte(State* state, int c) {
+template <bool kThreadSafe>
+typename DFA<kThreadSafe>::State* DFA<kThreadSafe>::RunStateOnByte(
+    State* state, int c) {
   //mutex_.AssertHeld();
 
   if (state <= SpecialStateMax) {
@@ -1109,7 +1157,7 @@ DFA::State* DFA::RunStateOnByte(State* state, int c) {
   // Write barrier before updating state->next_ so that the
   // main search loop can proceed without any locking, for speed.
   // (Otherwise it would need one mutex operation per input byte.)
-  state->next_[ByteMap(c)].store(ns, std::memory_order_release);
+  state->next_[ByteMap(c)].store(ns, kRelease);
   return ns;
 }
 
@@ -1132,7 +1180,8 @@ DFA::State* DFA::RunStateOnByte(State* state, int c) {
 // that through the search, so instead we encapsulate it in the RWLocker
 // and pass that around.
 
-class DFA::RWLocker {
+template <bool kThreadSafe>
+class DFA<kThreadSafe>::RWLocker {
  public:
   explicit RWLocker(CacheMutex* mu);
   ~RWLocker();
@@ -1151,13 +1200,17 @@ class DFA::RWLocker {
   RWLocker& operator=(const RWLocker&) = delete;
 };
 
-DFA::RWLocker::RWLocker(CacheMutex* mu) : mu_(mu), writing_(false) {
+template <bool kThreadSafe>
+DFA<kThreadSafe>::RWLocker::RWLocker(CacheMutex* mu)
+    : mu_(mu), writing_(false) {
   mu_->ReaderLock();
 }
 
 // This function is marked as ABSL_NO_THREAD_SAFETY_ANALYSIS because
 // the annotations don't support lock upgrade.
-void DFA::RWLocker::LockForWriting() ABSL_NO_THREAD_SAFETY_ANALYSIS {
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::RWLocker::LockForWriting()
+    ABSL_NO_THREAD_SAFETY_ANALYSIS {
   if (!writing_) {
     mu_->ReaderUnlock();
     mu_->WriterLock();
@@ -1165,7 +1218,8 @@ void DFA::RWLocker::LockForWriting() ABSL_NO_THREAD_SAFETY_ANALYSIS {
   }
 }
 
-DFA::RWLocker::~RWLocker() {
+template <bool kThreadSafe>
+DFA<kThreadSafe>::RWLocker::~RWLocker() {
   if (!writing_)
     mu_->ReaderUnlock();
   else
@@ -1184,7 +1238,8 @@ DFA::RWLocker::~RWLocker() {
 // runs holding cache_mutex_ for writing, avoiding any contention
 // with or cache pollution caused by other threads.
 
-void DFA::ResetCache(RWLocker* cache_lock) {
+template <bool kThreadSafe>
+void DFA<kThreadSafe>::ResetCache(RWLocker* cache_lock) {
   // Re-acquire the cache_mutex_ for writing (exclusive use).
   cache_lock->LockForWriting();
 
@@ -1216,7 +1271,8 @@ void DFA::ResetCache(RWLocker* cache_lock) {
 // is known to have room for at least a couple states (otherwise the DFA
 // constructor fails).
 
-class DFA::StateSaver {
+template <bool kThreadSafe>
+class DFA<kThreadSafe>::StateSaver {
  public:
   explicit StateSaver(DFA* dfa, State* state);
   ~StateSaver();
@@ -1241,7 +1297,8 @@ class DFA::StateSaver {
   StateSaver& operator=(const StateSaver&) = delete;
 };
 
-DFA::StateSaver::StateSaver(DFA* dfa, State* state) {
+template <bool kThreadSafe>
+DFA<kThreadSafe>::StateSaver::StateSaver(DFA* dfa, State* state) {
   dfa_ = dfa;
   if (state <= SpecialStateMax) {
     inst_ = NULL;
@@ -1259,15 +1316,17 @@ DFA::StateSaver::StateSaver(DFA* dfa, State* state) {
   memmove(inst_, state->inst_, ninst_*sizeof inst_[0]);
 }
 
-DFA::StateSaver::~StateSaver() {
+template <bool kThreadSafe>
+DFA<kThreadSafe>::StateSaver::~StateSaver() {
   if (!is_special_)
     delete[] inst_;
 }
 
-DFA::State* DFA::StateSaver::Restore() {
+template <bool kThreadSafe>
+typename DFA<kThreadSafe>::State* DFA<kThreadSafe>::StateSaver::Restore() {
   if (is_special_)
     return special_;
-  absl::MutexLock l(dfa_->mutex_);
+  Locker l(dfa_->mutex_);
   State* s = dfa_->CachedState(inst_, ninst_, flag_);
   if (s == NULL)
     ABSL_LOG(DFATAL) << "StateSaver failed to restore state.";
@@ -1342,10 +1401,11 @@ DFA::State* DFA::StateSaver::Restore() {
 // The bools are equal to the same-named variables in params, but
 // making them function arguments lets the inliner specialize
 // this function to each combination (see two paragraphs above).
+template <bool kThreadSafe>
 template <bool can_prefix_accel,
           bool want_earliest_match,
           bool run_forward>
-inline bool DFA::InlinedSearchLoop(SearchParams* params) {
+inline bool DFA<kThreadSafe>::InlinedSearchLoop(SearchParams* params) {
   State* start = params->start;
   const uint8_t* bp = BytePtr(params->text.data());  // start of text
   const uint8_t* p = bp;                             // text scanning point
@@ -1423,7 +1483,7 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params) {
     // Okay to use bytemap[] not ByteMap() here, because
     // c is known to be an actual byte and not kByteEndText.
 
-    State* ns = s->next_[bytemap[c]].load(std::memory_order_acquire);
+    State* ns = s->next_[bytemap[c]].load(kAcquire);
     if (ns == NULL) {
       ns = RunStateOnByteUnlocked(s, c);
       if (ns == NULL) {
@@ -1520,7 +1580,7 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params) {
       lastbyte = BeginPtr(params->text)[-1] & 0xFF;
   }
 
-  State* ns = s->next_[ByteMap(lastbyte)].load(std::memory_order_acquire);
+  State* ns = s->next_[ByteMap(lastbyte)].load(kAcquire);
   if (ns == NULL) {
     ns = RunStateOnByteUnlocked(s, lastbyte);
     if (ns == NULL) {
@@ -1569,34 +1629,43 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params) {
 }
 
 // Inline specializations of the general loop.
-bool DFA::SearchFFF(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchFFF(SearchParams* params) {
   return InlinedSearchLoop<false, false, false>(params);
 }
-bool DFA::SearchFFT(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchFFT(SearchParams* params) {
   return InlinedSearchLoop<false, false, true>(params);
 }
-bool DFA::SearchFTF(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchFTF(SearchParams* params) {
   return InlinedSearchLoop<false, true, false>(params);
 }
-bool DFA::SearchFTT(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchFTT(SearchParams* params) {
   return InlinedSearchLoop<false, true, true>(params);
 }
-bool DFA::SearchTFF(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchTFF(SearchParams* params) {
   return InlinedSearchLoop<true, false, false>(params);
 }
-bool DFA::SearchTFT(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchTFT(SearchParams* params) {
   return InlinedSearchLoop<true, false, true>(params);
 }
-bool DFA::SearchTTF(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchTTF(SearchParams* params) {
   return InlinedSearchLoop<true, true, false>(params);
 }
-bool DFA::SearchTTT(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::SearchTTT(SearchParams* params) {
   return InlinedSearchLoop<true, true, true>(params);
 }
 
 // For performance, calls the appropriate specialized version
 // of InlinedSearchLoop.
-bool DFA::FastSearchLoop(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::FastSearchLoop(SearchParams* params) {
   // Because the methods are private, the Searches array
   // cannot be declared at top level.
   static bool (DFA::*Searches[])(SearchParams*) = {
@@ -1643,7 +1712,8 @@ bool DFA::FastSearchLoop(SearchParams* params) {
 // Examines text, context, and anchored to determine the right start
 // state for the DFA search loop.  Fills in params and returns true on success.
 // Returns false on failure.
-bool DFA::AnalyzeSearch(SearchParams* params) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::AnalyzeSearch(SearchParams* params) {
   absl::string_view text = params->text;
   absl::string_view context = params->context;
 
@@ -1702,7 +1772,7 @@ bool DFA::AnalyzeSearch(SearchParams* params) {
     }
   }
 
-  params->start = info->start.load(std::memory_order_acquire);
+  params->start = info->start.load(kAcquire);
 
   // Even if we could prefix accel, we cannot do so when anchored and,
   // less obviously, we cannot do so when we are going to need flags.
@@ -1723,14 +1793,15 @@ bool DFA::AnalyzeSearch(SearchParams* params) {
 }
 
 // Fills in info if needed.  Returns true on success, false on failure.
-bool DFA::AnalyzeSearchHelper(SearchParams* params, StartInfo* info,
-                              uint32_t flags) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::AnalyzeSearchHelper(SearchParams* params,
+                                           StartInfo* info, uint32_t flags) {
   // Quick check.
-  State* start = info->start.load(std::memory_order_acquire);
+  State* start = info->start.load(kAcquire);
   if (start != NULL)
     return true;
 
-  absl::MutexLock l(mutex_);
+  Locker l(mutex_);
   start = info->start.load(std::memory_order_relaxed);
   if (start != NULL)
     return true;
@@ -1744,14 +1815,17 @@ bool DFA::AnalyzeSearchHelper(SearchParams* params, StartInfo* info,
     return false;
 
   // Synchronize with "quick check" above.
-  info->start.store(start, std::memory_order_release);
+  info->start.store(start, kRelease);
   return true;
 }
 
 // The actual DFA search: calls AnalyzeSearch and then FastSearchLoop.
-bool DFA::Search(absl::string_view text, absl::string_view context,
-                 bool anchored, bool want_earliest_match, bool run_forward,
-                 bool* failed, const char** epp, SparseSet* matches) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::Search(absl::string_view text,
+                              absl::string_view context, bool anchored,
+                              bool want_earliest_match, bool run_forward,
+                              bool* failed, const char** epp,
+                              SparseSet* matches) {
   *epp = NULL;
   if (!ok()) {
     *failed = true;
@@ -1798,7 +1872,8 @@ bool DFA::Search(absl::string_view text, absl::string_view context,
   return ret;
 }
 
-DFA* Prog::GetDFA(MatchKind kind) {
+template <>
+DFA<true>* Prog::GetDFA<true>(MatchKind kind) {
   // For a forward DFA, half the memory goes to each DFA.
   // However, if it is a "many match" DFA, then there is
   // no counterpart with which the memory must be shared.
@@ -1808,28 +1883,47 @@ DFA* Prog::GetDFA(MatchKind kind) {
   // "first match" searches.
   if (kind == kFirstMatch) {
     absl::call_once(dfa_first_once_, [](Prog* prog) {
-      prog->dfa_first_ = new DFA(prog, kFirstMatch, prog->dfa_mem_ / 2);
+      prog->dfa_first_ = new DFA<true>(prog, kFirstMatch, prog->dfa_mem_ / 2);
     }, this);
     return dfa_first_;
   } else if (kind == kManyMatch) {
     absl::call_once(dfa_first_once_, [](Prog* prog) {
-      prog->dfa_first_ = new DFA(prog, kManyMatch, prog->dfa_mem_);
+      prog->dfa_first_ = new DFA<true>(prog, kManyMatch, prog->dfa_mem_);
     }, this);
     return dfa_first_;
   } else {
     absl::call_once(dfa_longest_once_, [](Prog* prog) {
       if (!prog->reversed_)
-        prog->dfa_longest_ = new DFA(prog, kLongestMatch, prog->dfa_mem_ / 2);
+        prog->dfa_longest_ =
+            new DFA<true>(prog, kLongestMatch, prog->dfa_mem_ / 2);
       else
-        prog->dfa_longest_ = new DFA(prog, kLongestMatch, prog->dfa_mem_);
+        prog->dfa_longest_ = new DFA<true>(prog, kLongestMatch, prog->dfa_mem_);
     }, this);
     return dfa_longest_;
   }
 }
 
-void Prog::DeleteDFA(DFA* dfa) {
+template <>
+DFA<false>* Prog::GetDFA<false>(MatchKind kind) {
+  if (kind == kFirstMatch || kind == kManyMatch) {
+    if (owned_first_ == NULL)
+      owned_first_ = new DFA<false>(
+          this, kind, kind == kFirstMatch ? dfa_mem_ / 2 : dfa_mem_);
+    return owned_first_;
+  }
+  if (owned_longest_ == NULL)
+    owned_longest_ = new DFA<false>(this, kLongestMatch,
+                                    reversed_ ? dfa_mem_ : dfa_mem_ / 2);
+  return owned_longest_;
+}
+
+template <bool kThreadSafe>
+void Prog::DeleteDFA(DFA<kThreadSafe>* dfa) {
   delete dfa;
 }
+
+template void Prog::DeleteDFA<true>(DFA<true>* dfa);
+template void Prog::DeleteDFA<false>(DFA<false>* dfa);
 
 // Executes the regexp program to search in text,
 // which itself is inside the larger context.  (As a convenience,
@@ -1884,11 +1978,15 @@ bool Prog::SearchDFA(absl::string_view text, absl::string_view context,
     kind = kLongestMatch;
   }
 
-  DFA* dfa = GetDFA(kind);
   const char* ep;
-  bool matched = dfa->Search(text, context, anchored,
-                             want_earliest_match, !reversed_,
-                             failed, &ep, matches);
+  bool matched =
+      thread_safe_
+          ? GetDFA<true>(kind)->Search(text, context, anchored,
+                                       want_earliest_match, !reversed_,
+                                       failed, &ep, matches)
+          : GetDFA<false>(kind)->Search(text, context, anchored,
+                                        want_earliest_match, !reversed_,
+                                        failed, &ep, matches);
   if (*failed) {
     hooks::GetDFASearchFailureHook()({
         // Nothing yet...
@@ -1915,7 +2013,8 @@ bool Prog::SearchDFA(absl::string_view text, absl::string_view context,
 }
 
 // Build out all states in DFA.  Returns number of states.
-int DFA::BuildAllStates(const Prog::DFAStateCallback& cb) {
+template <bool kThreadSafe>
+int DFA<kThreadSafe>::BuildAllStates(const Prog::DFAStateCallback& cb) {
   if (!ok())
     return 0;
 
@@ -1984,12 +2083,15 @@ int DFA::BuildAllStates(const Prog::DFAStateCallback& cb) {
 
 // Build out all states in DFA for kind.  Returns number of states.
 int Prog::BuildEntireDFA(MatchKind kind, const DFAStateCallback& cb) {
-  return GetDFA(kind)->BuildAllStates(cb);
+  return thread_safe_ ? GetDFA<true>(kind)->BuildAllStates(cb)
+                      : GetDFA<false>(kind)->BuildAllStates(cb);
 }
 
 // Computes min and max for matching string.
 // Won't return strings bigger than maxlen.
-bool DFA::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
+template <bool kThreadSafe>
+bool DFA<kThreadSafe>::PossibleMatchRange(std::string* min, std::string* max,
+                                          int maxlen) {
   if (!ok())
     return false;
 
@@ -2050,7 +2152,7 @@ bool DFA::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
   // Build minimum prefix.
   State* s = params.start;
   min->clear();
-  absl::MutexLock lock(mutex_);
+  Locker lock(mutex_);
   for (int i = 0; i < maxlen; i++) {
     if (previously_visited_states[s] > kMaxEltRepetitions)
       break;
@@ -2129,7 +2231,10 @@ bool DFA::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
 bool Prog::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
   // Have to use dfa_longest_ to get all strings for full matches.
   // For example, (a|aa) never matches aa in first-match mode.
-  return GetDFA(kLongestMatch)->PossibleMatchRange(min, max, maxlen);
+  return thread_safe_
+             ? GetDFA<true>(kLongestMatch)->PossibleMatchRange(min, max, maxlen)
+             : GetDFA<false>(kLongestMatch)->PossibleMatchRange(min, max,
+                                                                maxlen);
 }
 
 }  // namespace re2
