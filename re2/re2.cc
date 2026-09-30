@@ -330,6 +330,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   if (!prog_->anchor_start() && !prog_->anchor_end() &&
       !prog_->can_prefix_accel())
     required_literal_ = RequiredLiteral(suffix_regexp_);
+  required_finder_ = LiteralFinder(required_literal_);
 }
 
 // Returns rprog_, computing it if needed.
@@ -826,7 +827,8 @@ bool RE2::Match(absl::string_view text,
       }
 
       if (!required_literal_.empty() &&
-          subtext.find(required_literal_) == absl::string_view::npos)
+          required_finder_.Find(required_literal_, subtext.data(),
+                                subtext.data() + subtext.size()) == NULL)
         return false;
 
       if (!prog_->SearchDFA(subtext, text, anchor, kind,

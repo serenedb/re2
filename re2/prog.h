@@ -21,6 +21,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/string_view.h"
+#include "re2/literal_finder.h"
 #include "re2/pod_array.h"
 #include "re2/re2.h"
 #include "re2/sparse_array.h"
@@ -251,11 +252,9 @@ class Prog {
     ABSL_DCHECK(can_prefix_accel());
     if (prefix_foldcase_) {
       return PrefixAccel_ShiftDFA(data, size);
-    } else if (prefix_size_ != 1) {
-      return PrefixAccel_FrontAndBack(data, size);
-    } else {
-      return memchr(data, prefix_front_, size);
     }
+    const char* p = static_cast<const char*>(data);
+    return prefix_finder_.Find(prefix_literal_, p, p + size);
   }
 
   // Configures prefix accel using the analysis performed during compilation.
@@ -264,10 +263,6 @@ class Prog {
   // An implementation of prefix accel that uses prefix_dfa_ to perform
   // case-insensitive search.
   const void* PrefixAccel_ShiftDFA(const void* data, size_t size);
-
-  // An implementation of prefix accel that looks for prefix_front_ and
-  // prefix_back_ to return fewer false positives than memchr(3) alone.
-  const void* PrefixAccel_FrontAndBack(const void* data, size_t size);
 
   // Returns string representation of program for debugging.
   std::string Dump();
@@ -447,13 +442,9 @@ class Prog {
 
   bool prefix_foldcase_;    // whether prefix is case-insensitive
   size_t prefix_size_;      // size of prefix (0 if no prefix)
-  union {
-    uint64_t* prefix_dfa_;  // "Shift DFA" for prefix
-    struct {
-      int prefix_front_;    // first byte of prefix
-      int prefix_back_;     // last byte of prefix
-    };
-  };
+  uint64_t* prefix_dfa_;    // "Shift DFA" for prefix
+  std::string prefix_literal_;
+  LiteralFinder prefix_finder_;
 
   int list_count_;                  // count of lists (see above)
   int inst_count_[kNumInst];        // count of instructions by opcode
