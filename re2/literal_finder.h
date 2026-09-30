@@ -54,28 +54,12 @@ class LiteralFinder {
     if (n == 1)
       return static_cast<const char*>(memchr(p, needle[0], end - p));
     const char* last = end - n;
+#if defined(__clang__)
+    if (last - p >= 31)
+      return Scan(needle, p, last);
+#endif
     const char first = needle[first_];
     const char second = needle[second_];
-#if defined(__clang__)
-    using Block = char __attribute__((vector_size(32)));
-    using Bits = bool __attribute__((ext_vector_type(32)));
-    for (; last - p >= 31; p += 32) {
-      Block a;
-      Block b;
-      memcpy(&a, p + first_, sizeof(a));
-      memcpy(&b, p + second_, sizeof(b));
-      const Bits hits = __builtin_convertvector((a == first) & (b == second),
-                                                Bits);
-      uint32_t mask;
-      memcpy(&mask, &hits, sizeof(mask));
-      while (mask != 0) {
-        const char* at = p + __builtin_ctz(mask);
-        if (memcmp(at, needle.data(), n) == 0)
-          return at;
-        mask &= mask - 1;
-      }
-    }
-#endif
     for (; p <= last; p++) {
       if (p[first_] == first && p[second_] == second &&
           memcmp(p, needle.data(), n) == 0)
@@ -85,6 +69,70 @@ class LiteralFinder {
   }
 
  private:
+#if defined(__clang__)
+  template <typename T>
+  static bool Same(const char* a, const char* b) {
+    T x;
+    T y;
+    memcpy(&x, a, sizeof(x));
+    memcpy(&y, b, sizeof(y));
+    return x == y;
+  }
+
+  static bool Equal(absl::string_view needle, const char* at) {
+    const char* s = needle.data();
+    const size_t n = needle.size();
+    if (n >= 8) {
+      for (size_t i = 0; i + 8 < n; i += 8)
+        if (!Same<uint64_t>(at + i, s + i))
+          return false;
+      return Same<uint64_t>(at + n - 8, s + n - 8);
+    }
+    if (n >= 4)
+      return Same<uint32_t>(at, s) && Same<uint32_t>(at + n - 4, s + n - 4);
+    return Same<uint16_t>(at, s) && Same<uint16_t>(at + n - 2, s + n - 2);
+  }
+
+  const char* Scan(absl::string_view needle, const char* p,
+                   const char* last) const {
+    const char first = needle[first_];
+    const char second = needle[second_];
+    const char* tail = last - 31;
+    [[clang::code_align(64)]] for (; p < tail; p += 32) {
+      uint32_t mask = Hits(p, first, second);
+      if (__builtin_expect(mask != 0, 0)) {
+        for (; mask != 0; mask &= mask - 1) {
+          const char* at = p + __builtin_ctz(mask);
+          if (Equal(needle, at))
+            return at;
+        }
+      }
+    }
+    uint32_t mask = Hits(tail, first, second) &
+                    (~uint32_t{0} << static_cast<uint32_t>(p - tail));
+    for (; mask != 0; mask &= mask - 1) {
+      const char* at = tail + __builtin_ctz(mask);
+      if (Equal(needle, at))
+        return at;
+    }
+    return NULL;
+  }
+
+  uint32_t Hits(const char* p, char first, char second) const {
+    using Block = char __attribute__((vector_size(32)));
+    using Bits = bool __attribute__((ext_vector_type(32)));
+    Block a;
+    Block b;
+    memcpy(&a, p + first_, sizeof(a));
+    memcpy(&b, p + second_, sizeof(b));
+    const Bits hits = __builtin_convertvector((a == first) & (b == second),
+                                              Bits);
+    uint32_t mask;
+    memcpy(&mask, &hits, sizeof(mask));
+    return mask;
+  }
+#endif
+
   static int Rank(char c) {
     const uint8_t b = static_cast<uint8_t>(c);
     if (b >= 0x80)
