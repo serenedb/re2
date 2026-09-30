@@ -105,7 +105,8 @@ std::string Prog::Inst::Dump() {
 }
 
 Prog::Prog()
-  : anchor_start_(false),
+  : thread_safe_(true),
+    anchor_start_(false),
     anchor_end_(false),
     reversed_(false),
     did_flatten_(false),
@@ -121,12 +122,16 @@ Prog::Prog()
     bit_state_text_max_size_(0),
     dfa_mem_(0),
     dfa_first_(NULL),
-    dfa_longest_(NULL) {
+    dfa_longest_(NULL),
+    owned_first_(NULL),
+    owned_longest_(NULL) {
 }
 
 Prog::~Prog() {
   DeleteDFA(dfa_longest_);
   DeleteDFA(dfa_first_);
+  DeleteDFA(owned_longest_);
+  DeleteDFA(owned_first_);
   if (prefix_foldcase_)
     delete[] prefix_dfa_;
 }

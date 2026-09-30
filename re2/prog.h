@@ -53,6 +53,7 @@ enum EmptyOp {
   kEmptyAllFlags         = (1<<6)-1,
 };
 
+template <bool kThreadSafe>
 class DFA;
 class Regexp;
 
@@ -238,6 +239,8 @@ class Prog {
   size_t bit_state_text_max_size() { return bit_state_text_max_size_; }
   int64_t dfa_mem() { return dfa_mem_; }
   void set_dfa_mem(int64_t dfa_mem) { dfa_mem_ = dfa_mem; }
+  bool thread_safe() { return thread_safe_; }
+  void set_thread_safe(bool b) { thread_safe_ = b; }
   bool anchor_start() { return anchor_start_; }
   void set_anchor_start(bool b) { anchor_start_ = b; }
   bool anchor_end() { return anchor_end_; }
@@ -426,9 +429,12 @@ class Prog {
  private:
   friend class Compiler;
 
-  DFA* GetDFA(MatchKind kind);
-  void DeleteDFA(DFA* dfa);
+  template <bool kThreadSafe>
+  DFA<kThreadSafe>* GetDFA(MatchKind kind);
+  template <bool kThreadSafe>
+  void DeleteDFA(DFA<kThreadSafe>* dfa);
 
+  bool thread_safe_;
   bool anchor_start_;       // regexp has explicit start anchor
   bool anchor_end_;         // regexp has explicit end anchor
   bool reversed_;           // whether program runs backward over input
@@ -456,8 +462,10 @@ class Prog {
   PODArray<uint8_t> onepass_nodes_;  // data for OnePass nodes
 
   int64_t dfa_mem_;         // Maximum memory for DFAs.
-  DFA* dfa_first_;          // DFA cached for kFirstMatch/kManyMatch
-  DFA* dfa_longest_;        // DFA cached for kLongestMatch/kFullMatch
+  DFA<true>* dfa_first_;    // DFA cached for kFirstMatch/kManyMatch
+  DFA<true>* dfa_longest_;  // DFA cached for kLongestMatch/kFullMatch
+  DFA<false>* owned_first_;
+  DFA<false>* owned_longest_;
 
   uint8_t bytemap_[256];    // map from input bytes to byte classes
 

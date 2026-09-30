@@ -69,7 +69,8 @@ RE2::Options::Options(RE2::CannedOptions opt)
     case_sensitive_(true),
     perl_classes_(false),
     word_boundary_(false),
-    one_line_(false) {
+    one_line_(false),
+    thread_safe_(true) {
 }
 
 // Empty objects for use as const references.
@@ -316,6 +317,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     error_code_ = RE2::ErrorPatternTooLarge;
     return;
   }
+  prog_->set_thread_safe(options_.thread_safe());
 
   // We used to compute this lazily, but it's used during the
   // typical control flow for a match call, so we now compute
@@ -341,6 +343,8 @@ re2::Prog* RE2::ReverseProg() const {
   absl::call_once(rprog_once_, [](const RE2* re) {
     re->rprog_ =
         re->suffix_regexp_->CompileToReverseProg(re->options_.max_mem() / 3);
+    if (re->rprog_ != NULL)
+      re->rprog_->set_thread_safe(re->options_.thread_safe());
     if (re->rprog_ == NULL) {
       if (re->options_.log_errors())
         ABSL_LOG(ERROR) << "Error reverse compiling '" << trunc(*re->pattern_)
