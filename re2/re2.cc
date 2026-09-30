@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/base/call_once.h"
 #include "absl/base/macros.h"
 #include "absl/container/fixed_array.h"
@@ -32,6 +33,7 @@
 #include "absl/strings/string_view.h"
 #include "re2/prog.h"
 #include "re2/regexp.h"
+#include "re2/segment_plan.h"
 #include "re2/sparse_array.h"
 #include "util/strutil.h"
 #include "util/utf.h"
@@ -69,7 +71,8 @@ RE2::Options::Options(RE2::CannedOptions opt)
     perl_classes_(false),
     word_boundary_(false),
     one_line_(false),
-    thread_safe_(true) {
+    thread_safe_(true),
+    valid_utf8_(false) {
 }
 
 // Empty objects for use as const references.
@@ -270,8 +273,11 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   longest_match_ = options_.longest_match();
   is_one_pass_ = false;
   prefix_foldcase_ = false;
+  plan_whole_ = false;
+  plan_min_size_ = 0;
   prefix_.clear();
   required_literal_.clear();
+  segment_plan_ = NULL;
   prog_ = NULL;
 
   rprog_ = NULL;
@@ -333,6 +339,11 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
       !prog_->can_prefix_accel())
     required_literal_ = RequiredLiteral(suffix_regexp_);
   required_finder_ = LiteralFinder(required_literal_);
+  segment_plan_ = SegmentPlan::Make(entire_regexp_, options_.valid_utf8());
+  plan_whole_ = segment_plan_ != NULL && prog_->anchor_end() &&
+                (prog_->anchor_start() || !prefix_.empty());
+  if (plan_whole_)
+    plan_min_size_ = segment_plan_->min_size();
 }
 
 // Returns rprog_, computing it if needed.
@@ -363,6 +374,7 @@ RE2::~RE2() {
     delete named_groups_;
   delete rprog_;
   delete prog_;
+  delete segment_plan_;
   if (error_arg_ != empty_string())
     delete error_arg_;
   if (error_ != empty_string())
@@ -709,12 +721,42 @@ static int ascii_strcasecmp(const char* a, const char* b, size_t len) {
 
 /***** Actual matching and rewriting code *****/
 
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool RE2::MatchPlan(
+    absl::string_view subtext, size_t startpos, absl::string_view* submatch,
+    int nsubmatch) const {
+  if (!prefix_.empty() &&
+      (startpos != 0 || prefix_.size() > subtext.size() ||
+       !LiteralFinder::Equal(subtext.data(), prefix_.data(), prefix_.size())))
+    return false;
+  if (nsubmatch == 0)
+    return segment_plan_->Match(subtext);
+  if (!segment_plan_->Match(subtext))
+    return false;
+  submatch[0] = subtext;
+  return true;
+}
+
 bool RE2::Match(absl::string_view text,
                 size_t startpos,
                 size_t endpos,
                 Anchor re_anchor,
                 absl::string_view* submatch,
                 int nsubmatch) const {
+  if (plan_whole_ && nsubmatch == 0 && startpos == 0 &&
+      endpos == text.size()) {
+    if (text.size() < plan_min_size_)
+      return false;
+    return MatchPlan(text, 0, NULL, 0);
+  }
+  return MatchImpl(text, startpos, endpos, re_anchor, submatch, nsubmatch);
+}
+
+bool RE2::MatchImpl(absl::string_view text,
+                    size_t startpos,
+                    size_t endpos,
+                    Anchor re_anchor,
+                    absl::string_view* submatch,
+                    int nsubmatch) const {
   if (!ok()) {
     if (options_.log_errors())
       ABSL_LOG(ERROR) << "Invalid RE2: " << *error_;
@@ -759,6 +801,11 @@ bool RE2::Match(absl::string_view text,
     re_anchor = ANCHOR_BOTH;
   else if (prog_->anchor_start() && re_anchor != ANCHOR_BOTH)
     re_anchor = ANCHOR_START;
+
+  if (segment_plan_ != NULL && nsubmatch <= 1 &&
+      (re_anchor != UNANCHORED || !prefix_.empty()) &&
+      (re_anchor == ANCHOR_BOTH || prog_->anchor_end()))
+    return MatchPlan(subtext, startpos, submatch, nsubmatch);
 
   // Check for the required prefix, if any.
   size_t prefixlen = 0;

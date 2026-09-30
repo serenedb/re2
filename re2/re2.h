@@ -230,6 +230,7 @@
 namespace re2 {
 class Prog;
 class Regexp;
+class SegmentPlan;
 }  // namespace re2
 
 namespace re2 {
@@ -690,7 +691,8 @@ class RE2 {
       perl_classes_(false),
       word_boundary_(false),
       one_line_(false),
-      thread_safe_(true) {
+      thread_safe_(true),
+      valid_utf8_(false) {
     }
 
     /*implicit*/ Options(CannedOptions);
@@ -737,6 +739,9 @@ class RE2 {
     bool thread_safe() const { return thread_safe_; }
     void set_thread_safe(bool b) { thread_safe_ = b; }
 
+    bool valid_utf8() const { return valid_utf8_; }
+    void set_valid_utf8(bool b) { valid_utf8_ = b; }
+
     void Copy(const Options& src) {
       *this = src;
     }
@@ -758,6 +763,7 @@ class RE2 {
     bool word_boundary_;
     bool one_line_;
     bool thread_safe_;
+    bool valid_utf8_;
   };
 
   // Returns the options set in the constructor.
@@ -786,6 +792,12 @@ class RE2 {
 
   re2::Prog* ReverseProg() const;
 
+  bool MatchPlan(absl::string_view subtext, size_t startpos,
+                 absl::string_view* submatch, int nsubmatch) const;
+  bool MatchImpl(absl::string_view text, size_t startpos, size_t endpos,
+                 Anchor re_anchor, absl::string_view* submatch,
+                 int nsubmatch) const;
+
   // First cache line is relatively cold fields.
   const std::string* pattern_;    // string regular expression
   Options options_;               // option flags
@@ -797,13 +809,16 @@ class RE2 {
   // Second cache line is relatively hot fields.
   // These are ordered oddly to pack everything.
   int num_captures_;              // number of capturing groups
-  ErrorCode error_code_ : 29;     // error code (29 bits is more than enough)
+  ErrorCode error_code_ : 28;     // error code (28 bits is more than enough)
   bool longest_match_ : 1;        // cached copy of options_.longest_match()
   bool is_one_pass_ : 1;          // can use prog_->SearchOnePass?
   bool prefix_foldcase_ : 1;      // prefix_ is ASCII case-insensitive
+  bool plan_whole_ : 1;
+  size_t plan_min_size_;
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
   LiteralFinder required_finder_;
+  re2::SegmentPlan* segment_plan_;
   re2::Prog* prog_;               // compiled program for regexp
 
   // Reverse Prog for DFA execution only

@@ -1688,6 +1688,77 @@ TEST(RE2, Issue477) {
   ASSERT_EQ(s, "\x61\x63");
 }
 
+TEST(RE2, ValidUTF8KeepsSubmatches) {
+  const char* patterns[] = {
+    "^https?://(?:www\\.)?([^/]+)/.*$",
+    "(\\w+)=.*",
+    "a(b).*?$",
+    "(?s)a(b).*$",
+    "a(b)[^\\n]*$",
+  };
+  const char* texts[] = {
+    "https://www.пример.рф/путь/страница?q=значение",
+    "http://example.com/a\nb",
+    "key=значение\nдалее",
+    "xab0123456789абвгдежзийклмн",
+    "ab\nдом",
+    "",
+  };
+  RE2::Options options;
+  options.set_valid_utf8(true);
+  for (const char* pattern : patterns) {
+    RE2 plain(pattern);
+    RE2 valid(pattern, options);
+    for (const char* text : texts) {
+      absl::string_view input(text);
+      absl::string_view a[2], b[2];
+      const bool matched_a = plain.Match(input, 0, input.size(),
+                                         RE2::UNANCHORED, a, 2);
+      const bool matched_b = valid.Match(input, 0, input.size(),
+                                         RE2::UNANCHORED, b, 2);
+      ASSERT_EQ(matched_a, matched_b) << pattern << " " << text;
+      if (!matched_a)
+        continue;
+      for (int i = 0; i < 2; i++) {
+        EXPECT_EQ(a[i].data(), b[i].data()) << pattern << " " << text;
+        EXPECT_EQ(a[i].size(), b[i].size()) << pattern << " " << text;
+      }
+    }
+  }
+}
+
+TEST(RE2, ValidUTF8KeepsWholeTextMatches) {
+  const char* patterns[] = {
+    "^http.*$",
+    "^.*пример.*$",
+    "^пр.мер.*$",
+    "a.b",
+    "(?s)^.*дом.*$",
+  };
+  const char* texts[] = {
+    "http://пример.рф/дом",
+    "пример",
+    "прамер и дом",
+    "aдb",
+    "a\nb",
+    "дом\nпример",
+    "",
+  };
+  RE2::Options options;
+  options.set_valid_utf8(true);
+  for (const char* pattern : patterns) {
+    RE2 plain(pattern);
+    RE2 valid(pattern, options);
+    for (const char* text : texts) {
+      EXPECT_EQ(RE2::FullMatch(text, plain), RE2::FullMatch(text, valid))
+          << pattern << " " << text;
+      EXPECT_EQ(RE2::PartialMatch(text, plain),
+                RE2::PartialMatch(text, valid))
+          << pattern << " " << text;
+    }
+  }
+}
+
 TEST(RE2, InitNULL) {
   // RE2::RE2 accepts NULL. Make sure it keeps doing that.
   RE2 re(NULL);
