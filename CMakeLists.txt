@@ -126,6 +126,7 @@ set(RE2_SOURCES
     re2/prog.cc
     re2/re2.cc
     re2/regexp.cc
+    re2/segment_plan.cc
     re2/set.cc
     re2/simplify.cc
     re2/tostring.cc
