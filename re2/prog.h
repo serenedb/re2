@@ -21,6 +21,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/string_view.h"
+#include "re2/byte_set_finder.h"
 #include "re2/literal_finder.h"
 #include "re2/pod_array.h"
 #include "re2/re2.h"
@@ -247,25 +248,33 @@ class Prog {
   void set_anchor_end(bool b) { anchor_end_ = b; }
   int bytemap_range() { return bytemap_range_; }
   const uint8_t* bytemap() { return bytemap_; }
-  bool can_prefix_accel() { return prefix_size_ != 0; }
+  bool can_prefix_accel() { return accel_ != Accel::kNone; }
+  bool literal_prefix_accel() {
+    return accel_ == Accel::kLiteral || accel_ == Accel::kFoldCase;
+  }
 
   // Accelerates to the first likely occurrence of the prefix.
   // Returns a pointer to the first byte or NULL if not found.
   const void* PrefixAccel(const void* data, size_t size) {
     ABSL_DCHECK(can_prefix_accel());
-    if (prefix_foldcase_) {
+    const char* p = static_cast<const char*>(data);
+    if (accel_ == Accel::kLiteral) {
+      return prefix_finder_.Find(prefix_literal_, p, p + size);
+    }
+    if (accel_ == Accel::kFoldCase) {
       return PrefixAccel_ShiftDFA(data, size);
     }
-    const char* p = static_cast<const char*>(data);
-    return prefix_finder_.Find(prefix_literal_, p, p + size);
+    return PrefixAccel_FirstByte(data, size);
   }
 
   // Configures prefix accel using the analysis performed during compilation.
   void ConfigurePrefixAccel(const std::string& prefix, bool prefix_foldcase);
+  void ConfigureFirstByteAccel();
 
   // An implementation of prefix accel that uses prefix_dfa_ to perform
   // case-insensitive search.
   const void* PrefixAccel_ShiftDFA(const void* data, size_t size);
+  const void* PrefixAccel_FirstByte(const void* data, size_t size);
 
   // Returns string representation of program for debugging.
   std::string Dump();
@@ -451,6 +460,9 @@ class Prog {
   uint64_t* prefix_dfa_;    // "Shift DFA" for prefix
   std::string prefix_literal_;
   LiteralFinder prefix_finder_;
+  enum class Accel : uint8_t { kNone, kLiteral, kFoldCase, kFirstByte };
+  Accel accel_ = Accel::kNone;
+  ByteSetFinder first_byte_finder_;
 
   int list_count_;                  // count of lists (see above)
   int inst_count_[kNumInst];        // count of instructions by opcode

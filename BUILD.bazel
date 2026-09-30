@@ -18,6 +18,7 @@ cc_library(
         "re2/bitmap256.cc",
         "re2/bitmap256.h",
         "re2/bitstate.cc",
+        "re2/byte_set_finder.h",
         "re2/compile.cc",
         "re2/dfa.cc",
         "re2/filtered_re2.cc",
