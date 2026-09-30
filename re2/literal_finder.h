@@ -14,6 +14,39 @@
 
 namespace re2 {
 
+namespace literal_finder_internal {
+
+constexpr uint8_t kLetterRank[26] = {
+    8, 5, 6, 6, 8, 6, 6, 8, 8, 3, 5, 6, 6,
+    8, 8, 6, 3, 8, 8, 8, 6, 5, 6, 3, 6, 3,
+};
+
+constexpr uint8_t RankOf(uint8_t b) {
+  if (b >= 0x80)
+    return b < 0xC0 || b >= 0xF5 ? 1 : 9;
+  if (b < 0x20)
+    return b == '\n' || b == '\t' || b == '\r' ? 6 : 1;
+  if (b >= 'a' && b <= 'z')
+    return kLetterRank[b - 'a'];
+  if (b == ' ')
+    return 10;
+  if (b == ',' || b == '.')
+    return 6;
+  return 4;
+}
+
+struct RankTable {
+  constexpr RankTable() : rank() {
+    for (int b = 0; b < 256; b++)
+      rank[b] = RankOf(static_cast<uint8_t>(b));
+  }
+  uint8_t rank[256];
+};
+
+inline constexpr RankTable kRanks;
+
+}  // namespace literal_finder_internal
+
 class LiteralFinder {
  public:
   LiteralFinder() = default;
@@ -22,9 +55,14 @@ class LiteralFinder {
     if (size_ < 2)
       return;
     size_t best = 0;
-    for (size_t i = 1; i < size_; i++)
-      if (Rank(needle[i]) < Rank(needle[best]))
+    int best_rank = Rank(needle[0]);
+    for (size_t i = 1; i < size_; i++) {
+      const int rank = Rank(needle[i]);
+      if (rank < best_rank) {
         best = i;
+        best_rank = rank;
+      }
+    }
     size_t other = best == 0 ? 1 : 0;
     for (size_t i = 0; i < size_; i++) {
       if (i == best)
@@ -134,24 +172,8 @@ class LiteralFinder {
 #endif
 
   static int Rank(char c) {
-    const uint8_t b = static_cast<uint8_t>(c);
-    if (b >= 0x80)
-      return b < 0xC0 || b >= 0xF5 ? 1 : 9;
-    if (b < 0x20)
-      return b == '\n' || b == '\t' || b == '\r' ? 6 : 1;
-    if (b >= 'a' && b <= 'z')
-      return kLetterRank[b - 'a'];
-    if (b == ' ')
-      return 10;
-    if (b == ',' || b == '.')
-      return 6;
-    return 4;
+    return literal_finder_internal::kRanks.rank[static_cast<uint8_t>(c)];
   }
-
-  static constexpr uint8_t kLetterRank[26] = {
-      8, 5, 6, 6, 8, 6, 6, 8, 8, 3, 5, 6, 6,
-      8, 8, 6, 3, 8, 8, 8, 6, 5, 6, 3, 6, 3,
-  };
 
   size_t size_ = 0;
   size_t first_ = 0;
