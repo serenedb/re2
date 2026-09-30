@@ -220,6 +220,7 @@
 
 #include "absl/base/call_once.h"
 #include "absl/strings/string_view.h"
+#include "re2/literal_finder.h"
 #include "re2/stringpiece.h"
 
 #if defined(__APPLE__)
@@ -797,6 +798,7 @@ class RE2 {
   bool prefix_foldcase_ : 1;      // prefix_ is ASCII case-insensitive
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
+  LiteralFinder required_finder_;
   re2::Prog* prog_;               // compiled program for regexp
 
   // Reverse Prog for DFA execution only

@@ -24,13 +24,6 @@
 #include "re2/sparse_array.h"
 #include "re2/sparse_set.h"
 
-#if defined(__AVX2__)
-#include <immintrin.h>
-#ifdef _MSC_VER
-#include <intrin.h>
-#endif
-#endif
-
 namespace re2 {
 
 // Constructors per Inst opcode
@@ -123,6 +116,7 @@ Prog::Prog()
     bytemap_range_(0),
     prefix_foldcase_(false),
     prefix_size_(0),
+    prefix_dfa_(NULL),
     list_count_(0),
     bit_state_text_max_size_(0),
     dfa_mem_(0),
@@ -1026,13 +1020,9 @@ void Prog::ConfigurePrefixAccel(const std::string& prefix,
     // ... and no more than nine bytes of the prefix. (See above for details.)
     prefix_size_ = std::min(prefix_size_, kShiftDFAFinal);
     prefix_dfa_ = BuildShiftDFA(prefix.substr(0, prefix_size_));
-  } else if (prefix_size_ != 1) {
-    // Use PrefixAccel_FrontAndBack().
-    prefix_front_ = prefix.front();
-    prefix_back_ = prefix.back();
   } else {
-    // Use memchr(3).
-    prefix_front_ = prefix.front();
+    prefix_literal_ = prefix;
+    prefix_finder_ = LiteralFinder(prefix_literal_);
   }
 }
 
@@ -1107,75 +1097,6 @@ const void* Prog::PrefixAccel_ShiftDFA(const void* data, size_t size) {
       return p-prefix_size_;
   }
   return NULL;
-}
-
-#if defined(__AVX2__)
-// Finds the least significant non-zero bit in n.
-static int FindLSBSet(uint32_t n) {
-  ABSL_DCHECK_NE(n, uint32_t{0});
-#if defined(__GNUC__)
-  return __builtin_ctz(n);
-#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-  unsigned long c;
-  _BitScanForward(&c, n);
-  return static_cast<int>(c);
-#else
-  int c = 31;
-  for (int shift = 1 << 4; shift != 0; shift >>= 1) {
-    uint32_t word = n << shift;
-    if (word != 0) {
-      n = word;
-      c -= shift;
-    }
-  }
-  return c;
-#endif
-}
-#endif
-
-const void* Prog::PrefixAccel_FrontAndBack(const void* data, size_t size) {
-  ABSL_DCHECK_GE(prefix_size_, size_t{2});
-  if (size < prefix_size_)
-    return NULL;
-  // Don't bother searching the last prefix_size_-1 bytes for prefix_front_.
-  // This also means that probing for prefix_back_ doesn't go out of bounds.
-  size -= prefix_size_-1;
-
-#if defined(__AVX2__)
-  // Use AVX2 to look for prefix_front_ and prefix_back_ 32 bytes at a time.
-  if (size >= sizeof(__m256i)) {
-    const __m256i* fp = reinterpret_cast<const __m256i*>(
-        reinterpret_cast<const char*>(data));
-    const __m256i* bp = reinterpret_cast<const __m256i*>(
-        reinterpret_cast<const char*>(data) + prefix_size_-1);
-    const __m256i* endfp = fp + size/sizeof(__m256i);
-    const __m256i f_set1 = _mm256_set1_epi8(prefix_front_);
-    const __m256i b_set1 = _mm256_set1_epi8(prefix_back_);
-    do {
-      const __m256i f_loadu = _mm256_loadu_si256(fp++);
-      const __m256i b_loadu = _mm256_loadu_si256(bp++);
-      const __m256i f_cmpeq = _mm256_cmpeq_epi8(f_set1, f_loadu);
-      const __m256i b_cmpeq = _mm256_cmpeq_epi8(b_set1, b_loadu);
-      const int fb_testz = _mm256_testz_si256(f_cmpeq, b_cmpeq);
-      if (fb_testz == 0) {  // ZF: 1 means zero, 0 means non-zero.
-        const __m256i fb_and = _mm256_and_si256(f_cmpeq, b_cmpeq);
-        const int fb_movemask = _mm256_movemask_epi8(fb_and);
-        const int fb_ctz = FindLSBSet(fb_movemask);
-        return reinterpret_cast<const char*>(fp-1) + fb_ctz;
-      }
-    } while (fp != endfp);
-    data = fp;
-    size = size%sizeof(__m256i);
-  }
-#endif
-
-  const char* p0 = reinterpret_cast<const char*>(data);
-  for (const char* p = p0;; p++) {
-    ABSL_DCHECK_GE(size, static_cast<size_t>(p-p0));
-    p = reinterpret_cast<const char*>(memchr(p, prefix_front_, size - (p-p0)));
-    if (p == NULL || p[prefix_size_-1] == prefix_back_)
-      return p;
-  }
 }
 
 }  // namespace re2
