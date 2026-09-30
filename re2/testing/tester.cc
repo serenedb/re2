@@ -47,6 +47,7 @@ const char* engine_names[kEngineMax] = {
   "DFA1",
   "OnePass",
   "BitState",
+  "BitStateReused",
   "RE2",
   "RE2a",
   "RE2b",
@@ -198,6 +199,7 @@ TestInstance::TestInstance(absl::string_view regexp_str, Prog::MatchKind kind,
     num_captures_(0),
     prog_(NULL),
     rprog_(NULL),
+    single_thread_prog_(NULL),
     re_(NULL),
     re2_(NULL) {
 
@@ -228,6 +230,16 @@ TestInstance::TestInstance(absl::string_view regexp_str, Prog::MatchKind kind,
                    << ", " << FormatMode(flags_)
                    << ")\n"
                    << prog_->Dump();
+  }
+
+  if (Engines() & (1<<kEngineBitStateReused)) {
+    single_thread_prog_ = regexp_->CompileToProg(0);
+    if (single_thread_prog_ == NULL) {
+      ABSL_LOG(INFO) << "Cannot compile: " << absl::CEscape(regexp_str_);
+      error_ = true;
+      return;
+    }
+    single_thread_prog_->set_thread_safe(false);
   }
 
   // Compile regexp to reversed prog.  Only needed for DFA engines.
@@ -301,6 +313,7 @@ TestInstance::~TestInstance() {
     regexp_->Decref();
   delete prog_;
   delete rprog_;
+  delete single_thread_prog_;
   delete re_;
   delete re2_;
 }
@@ -402,6 +415,17 @@ void TestInstance::RunSearch(Engine type, absl::string_view orig_text,
       }
       result->matched = prog_->SearchBitState(text, context, anchor, kind_,
                                               result->submatch, nsubmatch);
+      result->have_submatch = true;
+      break;
+
+    case kEngineBitStateReused:
+      if (single_thread_prog_ == NULL ||
+          !single_thread_prog_->CanBitState()) {
+        result->skipped = true;
+        break;
+      }
+      result->matched = single_thread_prog_->SearchBitState(
+          text, context, anchor, kind_, result->submatch, nsubmatch);
       result->have_submatch = true;
       break;
 

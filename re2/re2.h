@@ -689,7 +689,8 @@ class RE2 {
       case_sensitive_(true),
       perl_classes_(false),
       word_boundary_(false),
-      one_line_(false) {
+      one_line_(false),
+      thread_safe_(true) {
     }
 
     /*implicit*/ Options(CannedOptions);
@@ -733,6 +734,9 @@ class RE2 {
     bool one_line() const { return one_line_; }
     void set_one_line(bool b) { one_line_ = b; }
 
+    bool thread_safe() const { return thread_safe_; }
+    void set_thread_safe(bool b) { thread_safe_ = b; }
+
     void Copy(const Options& src) {
       *this = src;
     }
@@ -753,6 +757,7 @@ class RE2 {
     bool perl_classes_;
     bool word_boundary_;
     bool one_line_;
+    bool thread_safe_;
   };
 
   // Returns the options set in the constructor.

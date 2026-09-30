@@ -26,6 +26,7 @@ enum Engine {
   kEngineDFA1,             // Prog::SearchDFA, ask for match[0]
   kEngineOnePass,          // Prog::SearchOnePass, if applicable
   kEngineBitState,         // Prog::SearchBitState
+  kEngineBitStateReused,   // Prog::SearchBitState, one non-thread-safe Prog
   kEngineRE2,              // RE2, all submatches
   kEngineRE2a,             // RE2, only ask for match[0]
   kEngineRE2b,             // RE2, only ask whether it matched
@@ -79,6 +80,7 @@ class TestInstance {
   int num_captures_;                // regexp_->NumCaptures() cached
   Prog* prog_;                      // compiled program
   Prog* rprog_;                     // compiled reverse program
+  Prog* single_thread_prog_;        // compiled program, not thread-safe
   PCRE* re_;                        // PCRE implementation
   RE2* re2_;                        // RE2 implementation
 
