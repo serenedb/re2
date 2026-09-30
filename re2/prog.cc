@@ -1016,10 +1016,68 @@ static uint64_t* BuildShiftDFA(std::string prefix) {
   return dfa;
 }
 
+void Prog::ConfigureFirstByteAccel() {
+  uint64_t bits[4] = {};
+  const auto add = [&](int lo, int hi) {
+    for (int b = lo; b <= hi; b++)
+      bits[b >> 6] |= uint64_t{1} << (b & 63);
+  };
+  std::vector<int> stack;
+  std::vector<bool> seen(static_cast<size_t>(size()));
+  stack.push_back(start());
+  while (!stack.empty()) {
+    int id = stack.back();
+    stack.pop_back();
+    if (id == 0 || seen[id])
+      continue;
+    seen[id] = true;
+    for (;; id++) {
+      Inst* ip = inst(id);
+      switch (ip->opcode()) {
+        case kInstByteRange:
+          add(ip->lo(), ip->hi());
+          if (ip->foldcase() && ip->lo() <= 'z' && ip->hi() >= 'a')
+            add(std::max(ip->lo(), int{'a'}) - 'a' + 'A',
+                std::min(ip->hi(), int{'z'}) - 'a' + 'A');
+          break;
+        case kInstCapture:
+        case kInstNop:
+        case kInstEmptyWidth:
+          stack.push_back(ip->out());
+          break;
+        case kInstFail:
+          break;
+        default:
+          return;
+      }
+      if (ip->last())
+        break;
+    }
+  }
+  int count = 0;
+  for (int b = 0; b < 256; b++) {
+    if (((bits[b >> 6] >> (b & 63)) & 1) == 0)
+      continue;
+    if (literal_finder_internal::kRanks.rank[b] >= 8)
+      return;
+    count++;
+  }
+  if (count == 0 || count > 64)
+    return;
+  if (first_byte_finder_.Build(bits))
+    accel_ = Accel::kFirstByte;
+}
+
+const void* Prog::PrefixAccel_FirstByte(const void* data, size_t size) {
+  const char* p = static_cast<const char*>(data);
+  return first_byte_finder_.Find(p, p + size);
+}
+
 void Prog::ConfigurePrefixAccel(const std::string& prefix,
                                 bool prefix_foldcase) {
   prefix_foldcase_ = prefix_foldcase;
   prefix_size_ = prefix.size();
+  accel_ = prefix_foldcase_ ? Accel::kFoldCase : Accel::kLiteral;
   if (prefix_foldcase_) {
     // Use PrefixAccel_ShiftDFA().
     // ... and no more than nine bytes of the prefix. (See above for details.)

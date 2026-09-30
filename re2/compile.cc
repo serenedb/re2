@@ -1182,6 +1182,8 @@ Prog* Compiler::Finish(Regexp* re) {
     bool prefix_foldcase;
     if (re->RequiredPrefixForAccel(&prefix, &prefix_foldcase))
       prog_->ConfigurePrefixAccel(prefix, prefix_foldcase);
+    else
+      prog_->ConfigureFirstByteAccel();
   }
 
   // Record remaining memory for DFA.
