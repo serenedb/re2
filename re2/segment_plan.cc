@@ -241,8 +241,7 @@ size_t SegmentPlan::MatchAt(const Piece* piece, const Piece* end,
     }
     const size_t size = piece->size;
     if (size > limit - pos ||
-        (size != 0 && memcmp(data + pos, bytes_.data() + piece->offset,
-                             size) != 0))
+        !LiteralFinder::Equal(data + pos, bytes_.data() + piece->offset, size))
       return kNoMatch;
     pos += size;
   }
@@ -260,8 +259,7 @@ size_t SegmentPlan::MatchBefore(const Segment& segment, absl::string_view text,
     if (size > pos - lower)
       return kNoMatch;
     pos -= size;
-    if (size != 0 &&
-        memcmp(data + pos, bytes_.data() + piece->offset, size) != 0)
+    if (!LiteralFinder::Equal(data + pos, bytes_.data() + piece->offset, size))
       return kNoMatch;
     for (uint32_t skip = piece->skip; skip != 0; skip--) {
       const size_t n = UnitBefore(data + lower, data + pos);

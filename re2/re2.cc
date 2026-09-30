@@ -763,7 +763,10 @@ bool RE2::Match(absl::string_view text,
   if (segment_plan_ != NULL && nsubmatch <= 1 &&
       (re_anchor != UNANCHORED || !prefix_.empty()) &&
       (re_anchor == ANCHOR_BOTH || prog_->anchor_end())) {
-    if (!prefix_.empty() && startpos != 0)
+    if (!prefix_.empty() &&
+        (startpos != 0 || prefix_.size() > subtext.size() ||
+         !LiteralFinder::Equal(subtext.data(), prefix_.data(),
+                               prefix_.size())))
       return false;
     if (!segment_plan_->Match(subtext))
       return false;
