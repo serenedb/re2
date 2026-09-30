@@ -32,6 +32,7 @@
 #include "absl/strings/string_view.h"
 #include "re2/prog.h"
 #include "re2/regexp.h"
+#include "re2/segment_plan.h"
 #include "re2/sparse_array.h"
 #include "util/strutil.h"
 #include "util/utf.h"
@@ -271,6 +272,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   prefix_foldcase_ = false;
   prefix_.clear();
   required_literal_.clear();
+  segment_plan_ = NULL;
   prog_ = NULL;
 
   rprog_ = NULL;
@@ -331,6 +333,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
       !prog_->can_prefix_accel())
     required_literal_ = RequiredLiteral(suffix_regexp_);
   required_finder_ = LiteralFinder(required_literal_);
+  segment_plan_ = SegmentPlan::Make(entire_regexp_);
 }
 
 // Returns rprog_, computing it if needed.
@@ -359,6 +362,7 @@ RE2::~RE2() {
     delete named_groups_;
   delete rprog_;
   delete prog_;
+  delete segment_plan_;
   if (error_arg_ != empty_string())
     delete error_arg_;
   if (error_ != empty_string())
@@ -755,6 +759,18 @@ bool RE2::Match(absl::string_view text,
     re_anchor = ANCHOR_BOTH;
   else if (prog_->anchor_start() && re_anchor != ANCHOR_BOTH)
     re_anchor = ANCHOR_START;
+
+  if (segment_plan_ != NULL && nsubmatch <= 1 &&
+      (re_anchor != UNANCHORED || !prefix_.empty()) &&
+      (re_anchor == ANCHOR_BOTH || prog_->anchor_end())) {
+    if (!prefix_.empty() && startpos != 0)
+      return false;
+    if (!segment_plan_->Match(subtext))
+      return false;
+    if (nsubmatch == 1)
+      submatch[0] = subtext;
+    return true;
+  }
 
   // Check for the required prefix, if any.
   size_t prefixlen = 0;

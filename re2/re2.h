@@ -230,6 +230,7 @@
 namespace re2 {
 class Prog;
 class Regexp;
+class SegmentPlan;
 }  // namespace re2
 
 namespace re2 {
@@ -799,6 +800,7 @@ class RE2 {
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
   LiteralFinder required_finder_;
+  re2::SegmentPlan* segment_plan_;
   re2::Prog* prog_;               // compiled program for regexp
 
   // Reverse Prog for DFA execution only
