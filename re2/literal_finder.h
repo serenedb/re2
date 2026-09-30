@@ -62,14 +62,27 @@ class LiteralFinder {
     const char second = needle[second_];
     for (; p <= last; p++) {
       if (p[first_] == first && p[second_] == second &&
-          memcmp(p, needle.data(), n) == 0)
+          Equal(p, needle.data(), n))
         return p;
     }
     return NULL;
   }
 
+  static bool Equal(const char* a, const char* b, size_t n) {
+    if (n >= 8) {
+      for (size_t i = 0; i + 8 < n; i += 8)
+        if (!Same<uint64_t>(a + i, b + i))
+          return false;
+      return Same<uint64_t>(a + n - 8, b + n - 8);
+    }
+    if (n >= 4)
+      return Same<uint32_t>(a, b) && Same<uint32_t>(a + n - 4, b + n - 4);
+    if (n >= 2)
+      return Same<uint16_t>(a, b) && Same<uint16_t>(a + n - 2, b + n - 2);
+    return n == 0 || *a == *b;
+  }
+
  private:
-#if defined(__clang__)
   template <typename T>
   static bool Same(const char* a, const char* b) {
     T x;
@@ -79,20 +92,7 @@ class LiteralFinder {
     return x == y;
   }
 
-  static bool Equal(absl::string_view needle, const char* at) {
-    const char* s = needle.data();
-    const size_t n = needle.size();
-    if (n >= 8) {
-      for (size_t i = 0; i + 8 < n; i += 8)
-        if (!Same<uint64_t>(at + i, s + i))
-          return false;
-      return Same<uint64_t>(at + n - 8, s + n - 8);
-    }
-    if (n >= 4)
-      return Same<uint32_t>(at, s) && Same<uint32_t>(at + n - 4, s + n - 4);
-    return Same<uint16_t>(at, s) && Same<uint16_t>(at + n - 2, s + n - 2);
-  }
-
+#if defined(__clang__)
   const char* Scan(absl::string_view needle, const char* p,
                    const char* last) const {
     const char first = needle[first_];
@@ -103,7 +103,7 @@ class LiteralFinder {
       if (__builtin_expect(mask != 0, 0)) {
         for (; mask != 0; mask &= mask - 1) {
           const char* at = p + __builtin_ctz(mask);
-          if (Equal(needle, at))
+          if (Equal(at, needle.data(), needle.size()))
             return at;
         }
       }
@@ -112,7 +112,7 @@ class LiteralFinder {
                     (~uint32_t{0} << static_cast<uint32_t>(p - tail));
     for (; mask != 0; mask &= mask - 1) {
       const char* at = tail + __builtin_ctz(mask);
-      if (Equal(needle, at))
+      if (Equal(at, needle.data(), needle.size()))
         return at;
     }
     return NULL;
