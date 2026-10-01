@@ -27,11 +27,12 @@
 
 namespace re2 {
 
-class MultiLiteralFinder {
+template <size_t kCapacity>
+class BasicMultiLiteralFinder {
  public:
-  static constexpr size_t kMaxLiterals = 64;
+  static constexpr size_t kMaxLiterals = kCapacity;
 
-  MultiLiteralFinder() = default;
+  BasicMultiLiteralFinder() = default;
 
   template <typename LiteralAt>
   bool Build(size_t count, LiteralAt literal_at) {
@@ -351,6 +352,8 @@ class MultiLiteralFinder {
   uint32_t starts_[kMaxLiterals + 1] = {};
   std::string bytes_;
 };
+
+using MultiLiteralFinder = BasicMultiLiteralFinder<64>;
 
 }  // namespace re2
 
