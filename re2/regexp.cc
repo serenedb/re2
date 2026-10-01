@@ -759,13 +759,46 @@ bool Regexp::RequiredPrefixForAccel(std::string* prefix, bool* foldcase) {
   return true;
 }
 
-static const size_t kMaxAccelPrefixes = 64;
-static const int kMaxAccelPrefixDepth = 8;
-static const int kMaxAccelClassRunes = 4;
+struct LiteralLimits {
+  size_t strings;
+  int class_runes;
+  int depth;
+};
 
-static bool AppendAccelPrefixes(Regexp* re, int depth,
-                                std::vector<std::string>* out, bool* exact) {
-  if (depth > kMaxAccelPrefixDepth)
+static const LiteralLimits kAccelLimits = {64, 4, 8};
+static const LiteralLimits kSetLimits = {1024, 1024, 64};
+
+static bool AppendLiterals(Regexp* re, const LiteralLimits& limits, int depth,
+                           std::vector<std::string>* out, bool* exact);
+
+static bool AppendConcat(Regexp** subs, int nsub, const LiteralLimits& limits,
+                         int depth, std::vector<std::string>* out,
+                         bool* exact) {
+  std::vector<std::string> heads;
+  if (!AppendLiterals(subs[0], limits, depth + 1, &heads, exact))
+    return false;
+  for (int i = 1; i < nsub && *exact; i++) {
+    std::vector<std::string> tails;
+    bool tail_exact;
+    if (!AppendLiterals(subs[i], limits, depth + 1, &tails, &tail_exact) ||
+        heads.size() * tails.size() > limits.strings) {
+      *exact = false;
+      break;
+    }
+    std::vector<std::string> joined;
+    for (const std::string& head : heads)
+      for (const std::string& tail : tails)
+        joined.push_back(head + tail);
+    heads = std::move(joined);
+    *exact = tail_exact;
+  }
+  out->insert(out->end(), heads.begin(), heads.end());
+  return out->size() <= limits.strings;
+}
+
+static bool AppendLiterals(Regexp* re, const LiteralLimits& limits, int depth,
+                           std::vector<std::string>* out, bool* exact) {
+  if (depth > limits.depth)
     return false;
   switch (re->op()) {
     case kRegexpLiteral:
@@ -786,7 +819,7 @@ static bool AppendAccelPrefixes(Regexp* re, int depth,
     }
     case kRegexpCharClass: {
       CharClass* cc = re->cc();
-      if (cc->size() > kMaxAccelClassRunes)
+      if (cc->size() > limits.class_runes)
         return false;
       const bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
       for (CharClass::iterator it = cc->begin(); it != cc->end(); ++it) {
@@ -797,43 +830,23 @@ static bool AppendAccelPrefixes(Regexp* re, int depth,
         }
       }
       *exact = true;
-      return out->size() <= kMaxAccelPrefixes;
+      return out->size() <= limits.strings;
     }
     case kRegexpCapture:
-      return AppendAccelPrefixes(re->sub()[0], depth + 1, out, exact);
+      return AppendLiterals(re->sub()[0], limits, depth + 1, out, exact);
     case kRegexpAlternate:
       *exact = true;
       for (int i = 0; i < re->nsub(); i++) {
         bool sub_exact;
-        if (!AppendAccelPrefixes(re->sub()[i], depth + 1, out, &sub_exact) ||
-            out->size() > kMaxAccelPrefixes)
+        if (!AppendLiterals(re->sub()[i], limits, depth + 1, out,
+                            &sub_exact) ||
+            out->size() > limits.strings)
           return false;
         *exact = *exact && sub_exact;
       }
       return true;
-    case kRegexpConcat: {
-      std::vector<std::string> heads;
-      if (!AppendAccelPrefixes(re->sub()[0], depth + 1, &heads, exact))
-        return false;
-      for (int i = 1; i < re->nsub() && *exact; i++) {
-        std::vector<std::string> tails;
-        bool tail_exact;
-        if (!AppendAccelPrefixes(re->sub()[i], depth + 1, &tails,
-                                 &tail_exact) ||
-            heads.size() * tails.size() > kMaxAccelPrefixes) {
-          *exact = false;
-          break;
-        }
-        std::vector<std::string> joined;
-        for (const std::string& head : heads)
-          for (const std::string& tail : tails)
-            joined.push_back(head + tail);
-        heads = std::move(joined);
-        *exact = tail_exact;
-      }
-      out->insert(out->end(), heads.begin(), heads.end());
-      return out->size() <= kMaxAccelPrefixes;
-    }
+    case kRegexpConcat:
+      return AppendConcat(re->sub(), re->nsub(), limits, depth, out, exact);
     default:
       return false;
   }
@@ -842,9 +855,32 @@ static bool AppendAccelPrefixes(Regexp* re, int depth,
 bool Regexp::RequiredPrefixesForAccel(std::vector<std::string>* prefixes) {
   prefixes->clear();
   bool exact;
-  if (AppendAccelPrefixes(this, 0, prefixes, &exact))
+  if (AppendLiterals(this, kAccelLimits, 0, prefixes, &exact))
     return true;
   prefixes->clear();
+  return false;
+}
+
+bool Regexp::LiteralSet(std::vector<std::string>* strings) {
+  strings->clear();
+  Regexp* self = this;
+  Regexp** subs = &self;
+  int nsub = 1;
+  if (op_ == kRegexpConcat) {
+    subs = sub();
+    nsub = nsub_;
+  }
+  if (nsub > 0 && subs[0]->op() == kRegexpBeginText) {
+    subs++;
+    nsub--;
+  }
+  if (nsub > 0 && subs[nsub - 1]->op() == kRegexpEndText)
+    nsub--;
+  bool exact = false;
+  if (nsub > 0 &&
+      AppendConcat(subs, nsub, kSetLimits, 0, strings, &exact) && exact)
+    return true;
+  strings->clear();
   return false;
 }
 

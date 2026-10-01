@@ -25,6 +25,7 @@
 #include "absl/base/call_once.h"
 #include "absl/base/macros.h"
 #include "absl/container/fixed_array.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/ascii.h"
@@ -253,6 +254,10 @@ static std::string RequiredLiteral(Regexp* re) {
   return best;
 }
 
+struct FullMatchSet {
+  absl::flat_hash_set<std::string> strings;
+};
+
 using RequiredSetFinder = BasicMultiLiteralFinder<128>;
 
 static const size_t kMaxRequiredVariants = RequiredSetFinder::kMaxLiterals;
@@ -364,9 +369,11 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   is_one_pass_ = false;
   prefix_foldcase_ = false;
   has_required_set_ = false;
+  has_full_match_set_ = false;
   prefix_.clear();
   required_literal_.clear();
   required_set_ = NULL;
+  full_match_set_ = NULL;
   segment_plan_ = NULL;
   prog_ = NULL;
 
@@ -443,6 +450,13 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   }
   required_finder_ = LiteralFinder(required_literal_);
   segment_plan_ = SegmentPlan::Make(entire_regexp_);
+  std::vector<std::string> strings;
+  if (!options_.never_nl() && entire_regexp_->LiteralSet(&strings) &&
+      strings.size() > 1) {
+    full_match_set_ = new FullMatchSet;
+    full_match_set_->strings.insert(strings.begin(), strings.end());
+    has_full_match_set_ = true;
+  }
 }
 
 // Returns rprog_, computing it if needed.
@@ -474,6 +488,7 @@ RE2::~RE2() {
   delete rprog_;
   delete prog_;
   delete required_set_;
+  delete full_match_set_;
   delete segment_plan_;
   if (error_arg_ != empty_string())
     delete error_arg_;
@@ -871,6 +886,14 @@ bool RE2::Match(absl::string_view text,
     re_anchor = ANCHOR_BOTH;
   else if (prog_->anchor_start() && re_anchor != ANCHOR_BOTH)
     re_anchor = ANCHOR_START;
+
+  if (has_full_match_set_ && re_anchor == ANCHOR_BOTH && nsubmatch <= 1) {
+    if (!full_match_set_->strings.contains(subtext))
+      return false;
+    if (nsubmatch == 1)
+      submatch[0] = subtext;
+    return true;
+  }
 
   if (segment_plan_ != NULL && nsubmatch <= 1 &&
       (re_anchor != UNANCHORED || !prefix_.empty()) &&
