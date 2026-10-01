@@ -372,6 +372,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   has_required_set_ = false;
   has_full_match_set_ = false;
   plan_whole_ = false;
+  plan_min_size_ = 0;
   prefix_.clear();
   required_literal_.clear();
   required_set_ = NULL;
@@ -462,6 +463,8 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   plan_whole_ = segment_plan_ != NULL && !has_full_match_set_ &&
                 prog_->anchor_end() &&
                 (prog_->anchor_start() || !prefix_.empty());
+  if (plan_whole_)
+    plan_min_size_ = segment_plan_->min_size();
 }
 
 // Returns rprog_, computing it if needed.
@@ -862,8 +865,12 @@ bool RE2::Match(absl::string_view text,
                 Anchor re_anchor,
                 absl::string_view* submatch,
                 int nsubmatch) const {
-  if (plan_whole_ && startpos == 0 && endpos == text.size() && nsubmatch <= 1)
-    return MatchPlan(text, 0, submatch, nsubmatch);
+  if (plan_whole_ && nsubmatch == 0 && startpos == 0 &&
+      endpos == text.size()) {
+    if (text.size() < plan_min_size_)
+      return false;
+    return MatchPlan(text, 0, NULL, 0);
+  }
   return MatchImpl(text, startpos, endpos, re_anchor, submatch, nsubmatch);
 }
 

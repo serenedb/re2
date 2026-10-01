@@ -24,6 +24,8 @@ class SegmentPlan {
 
   bool Match(absl::string_view text) const;
 
+  size_t min_size() const { return min_size_; }
+
  private:
   struct Piece {
     uint32_t skip;
@@ -42,6 +44,7 @@ class SegmentPlan {
     kExact,
     kAffix,
     kContains,
+    kSegments,
   };
 
   SegmentPlan() = default;
@@ -61,6 +64,7 @@ class SegmentPlan {
   std::vector<Piece> pieces_;
   std::vector<Segment> segments_;
   const char* literals_ = NULL;
+  size_t min_size_ = 0;
   uint32_t first_ = 0;
   uint32_t first_size_ = 0;
   uint32_t last_ = 0;
