@@ -13,6 +13,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
@@ -1180,9 +1181,11 @@ Prog* Compiler::Finish(Regexp* re) {
   if (!prog_->reversed()) {
     std::string prefix;
     bool prefix_foldcase;
+    std::vector<std::string> prefixes;
     if (re->RequiredPrefixForAccel(&prefix, &prefix_foldcase))
       prog_->ConfigurePrefixAccel(prefix, prefix_foldcase);
-    else
+    else if (!re->RequiredPrefixesForAccel(&prefixes) ||
+             !prog_->ConfigureMultiLiteralAccel(prefixes))
       prog_->ConfigureFirstByteAccel();
   }
 
