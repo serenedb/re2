@@ -98,10 +98,15 @@ class LiteralFinder {
 #endif
     const char first = needle[first_];
     const char second = needle[second_];
-    for (; p <= last; p++) {
-      if (p[first_] == first && p[second_] == second &&
-          Equal(p, needle.data(), n))
+    while (p <= last) {
+      const char* hit = static_cast<const char*>(
+          memchr(p + first_, first, static_cast<size_t>(last - p) + 1));
+      if (hit == NULL)
+        return NULL;
+      p = hit - first_;
+      if (p[second_] == second && Equal(p, needle.data(), n))
         return p;
+      p++;
     }
     return NULL;
   }
