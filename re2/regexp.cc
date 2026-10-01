@@ -759,6 +759,79 @@ bool Regexp::RequiredPrefixForAccel(std::string* prefix, bool* foldcase) {
   return true;
 }
 
+static const size_t kMaxAccelPrefixes = 64;
+static const int kMaxAccelPrefixDepth = 8;
+
+static bool AppendAccelPrefixes(Regexp* re, int depth,
+                                std::vector<std::string>* out, bool* exact) {
+  if (depth > kMaxAccelPrefixDepth)
+    return false;
+  switch (re->op()) {
+    case kRegexpLiteral:
+    case kRegexpLiteralString: {
+      if (re->parse_flags() & Regexp::FoldCase)
+        return false;
+      const bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
+      std::string bytes;
+      if (re->op() == kRegexpLiteral) {
+        Rune rune = re->rune();
+        ConvertRunesToBytes(latin1, &rune, 1, &bytes);
+      } else {
+        ConvertRunesToBytes(latin1, re->runes(), re->nrunes(), &bytes);
+      }
+      out->push_back(std::move(bytes));
+      *exact = true;
+      return true;
+    }
+    case kRegexpCapture:
+      return AppendAccelPrefixes(re->sub()[0], depth + 1, out, exact);
+    case kRegexpAlternate:
+      *exact = true;
+      for (int i = 0; i < re->nsub(); i++) {
+        bool sub_exact;
+        if (!AppendAccelPrefixes(re->sub()[i], depth + 1, out, &sub_exact) ||
+            out->size() > kMaxAccelPrefixes)
+          return false;
+        *exact = *exact && sub_exact;
+      }
+      return true;
+    case kRegexpConcat: {
+      std::vector<std::string> heads;
+      if (!AppendAccelPrefixes(re->sub()[0], depth + 1, &heads, exact))
+        return false;
+      for (int i = 1; i < re->nsub() && *exact; i++) {
+        std::vector<std::string> tails;
+        bool tail_exact;
+        if (!AppendAccelPrefixes(re->sub()[i], depth + 1, &tails,
+                                 &tail_exact) ||
+            heads.size() * tails.size() > kMaxAccelPrefixes) {
+          *exact = false;
+          break;
+        }
+        std::vector<std::string> joined;
+        for (const std::string& head : heads)
+          for (const std::string& tail : tails)
+            joined.push_back(head + tail);
+        heads = std::move(joined);
+        *exact = tail_exact;
+      }
+      out->insert(out->end(), heads.begin(), heads.end());
+      return out->size() <= kMaxAccelPrefixes;
+    }
+    default:
+      return false;
+  }
+}
+
+bool Regexp::RequiredPrefixesForAccel(std::vector<std::string>* prefixes) {
+  prefixes->clear();
+  bool exact;
+  if (AppendAccelPrefixes(this, 0, prefixes, &exact))
+    return true;
+  prefixes->clear();
+  return false;
+}
+
 // Character class builder is a balanced binary tree (STL set)
 // containing non-overlapping, non-abutting RuneRanges.
 // The less-than operator used in the tree treats two

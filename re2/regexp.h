@@ -92,6 +92,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -476,6 +477,8 @@ class Regexp {
   // Callers should expect *prefix and *foldcase to be "zeroed"
   // regardless of the return value.
   bool RequiredPrefixForAccel(std::string* prefix, bool* foldcase);
+
+  bool RequiredPrefixesForAccel(std::vector<std::string>* prefixes);
 
   // Controls the maximum repeat count permitted by the parser.
   // FOR FUZZING ONLY.

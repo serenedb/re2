@@ -23,6 +23,7 @@
 #include "absl/strings/string_view.h"
 #include "re2/byte_set_finder.h"
 #include "re2/literal_finder.h"
+#include "re2/multi_literal_finder.h"
 #include "re2/pod_array.h"
 #include "re2/re2.h"
 #include "re2/sparse_array.h"
@@ -264,17 +265,18 @@ class Prog {
     if (accel_ == Accel::kFoldCase) {
       return PrefixAccel_ShiftDFA(data, size);
     }
-    return PrefixAccel_FirstByte(data, size);
+    return PrefixAccel_Finder(data, size);
   }
 
   // Configures prefix accel using the analysis performed during compilation.
   void ConfigurePrefixAccel(const std::string& prefix, bool prefix_foldcase);
   void ConfigureFirstByteAccel();
+  bool ConfigureMultiLiteralAccel(const std::vector<std::string>& prefixes);
 
   // An implementation of prefix accel that uses prefix_dfa_ to perform
   // case-insensitive search.
   const void* PrefixAccel_ShiftDFA(const void* data, size_t size);
-  const void* PrefixAccel_FirstByte(const void* data, size_t size);
+  const void* PrefixAccel_Finder(const void* data, size_t size);
 
   // Returns string representation of program for debugging.
   std::string Dump();
@@ -460,9 +462,16 @@ class Prog {
   uint64_t* prefix_dfa_;    // "Shift DFA" for prefix
   std::string prefix_literal_;
   LiteralFinder prefix_finder_;
-  enum class Accel : uint8_t { kNone, kLiteral, kFoldCase, kFirstByte };
+  enum class Accel : uint8_t {
+    kNone,
+    kLiteral,
+    kFoldCase,
+    kFirstByte,
+    kMultiLiteral,
+  };
   Accel accel_ = Accel::kNone;
   ByteSetFinder first_byte_finder_;
+  MultiLiteralFinder multi_literal_finder_;
 
   int list_count_;                  // count of lists (see above)
   int inst_count_[kNumInst];        // count of instructions by opcode
