@@ -13,6 +13,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
@@ -1180,10 +1181,17 @@ Prog* Compiler::Finish(Regexp* re) {
   if (!prog_->reversed()) {
     std::string prefix;
     bool prefix_foldcase;
-    if (re->RequiredPrefixForAccel(&prefix, &prefix_foldcase))
-      prog_->ConfigurePrefixAccel(prefix, prefix_foldcase);
-    else
-      prog_->ConfigureFirstByteAccel();
+    std::vector<std::string> prefixes;
+    const bool literal = re->RequiredPrefixForAccel(&prefix, &prefix_foldcase);
+    if (literal && !prefix_foldcase) {
+      prog_->ConfigurePrefixAccel(prefix, false);
+    } else if (!re->RequiredPrefixesForAccel(&prefixes) ||
+               !prog_->ConfigureMultiLiteralAccel(prefixes)) {
+      if (literal)
+        prog_->ConfigurePrefixAccel(prefix, true);
+      else
+        prog_->ConfigureFirstByteAccel();
+    }
   }
 
   // Record remaining memory for DFA.

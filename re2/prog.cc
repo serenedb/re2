@@ -1068,9 +1068,24 @@ void Prog::ConfigureFirstByteAccel() {
     accel_ = Accel::kFirstByte;
 }
 
-const void* Prog::PrefixAccel_FirstByte(const void* data, size_t size) {
+const void* Prog::PrefixAccel_Finder(const void* data, size_t size) {
   const char* p = static_cast<const char*>(data);
-  return first_byte_finder_.Find(p, p + size);
+  if (accel_ == Accel::kFirstByte)
+    return first_byte_finder_.Find(p, p + size);
+  return multi_literal_finder_.Find(p, p + size);
+}
+
+bool Prog::ConfigureMultiLiteralAccel(
+    const std::vector<std::string>& prefixes) {
+  for (const std::string& prefix : prefixes)
+    if (prefix.size() < 2)
+      return false;
+  if (!multi_literal_finder_.Build(
+          prefixes.size(),
+          [&](size_t i) -> absl::string_view { return prefixes[i]; }))
+    return false;
+  accel_ = Accel::kMultiLiteral;
+  return true;
 }
 
 void Prog::ConfigurePrefixAccel(const std::string& prefix,

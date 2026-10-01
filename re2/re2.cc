@@ -26,6 +26,7 @@
 #include "absl/base/call_once.h"
 #include "absl/base/macros.h"
 #include "absl/container/fixed_array.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/ascii.h"
@@ -255,6 +256,102 @@ static std::string RequiredLiteral(Regexp* re) {
   return best;
 }
 
+struct FullMatchSet {
+  absl::flat_hash_set<std::string> strings;
+};
+
+using RequiredSetFinder = BasicMultiLiteralFinder<128>;
+
+static const size_t kMaxRequiredVariants = RequiredSetFinder::kMaxLiterals;
+static const int kMaxRequiredClassRunes = 4;
+
+static void AppendRune(Regexp* re, Rune r, std::vector<std::string>* out) {
+  if (re->parse_flags() & Regexp::Latin1) {
+    out->push_back(std::string(1, static_cast<char>(r)));
+    return;
+  }
+  char buf[UTFmax];
+  out->push_back(std::string(buf, runetochar(buf, &r)));
+}
+
+static bool RequiredLiteralSet(Regexp* re, std::vector<std::string>* best) {
+  while (re->op() == kRegexpCapture)
+    re = re->sub()[0];
+  Regexp** subs = &re;
+  int nsub = 1;
+  if (re->op() == kRegexpConcat) {
+    subs = re->sub();
+    nsub = re->nsub();
+  }
+  size_t best_size = 0;
+  bool best_at_start = false;
+  std::vector<std::string> run;
+  bool run_at_start = true;
+  auto flush = [&]() {
+    if (!run.empty()) {
+      size_t size = run[0].size();
+      for (const std::string& s : run)
+        size = std::min(size, s.size());
+      if (size > best_size) {
+        best_size = size;
+        *best = run;
+        best_at_start = run_at_start;
+      }
+    }
+    run.clear();
+    run_at_start = false;
+  };
+  auto extend = [&](const std::vector<std::string>& choices) {
+    if (!run.empty() && run.size() * choices.size() > kMaxRequiredVariants)
+      flush();
+    if (run.empty()) {
+      run = choices;
+      return;
+    }
+    std::vector<std::string> joined;
+    for (const std::string& head : run)
+      for (const std::string& tail : choices)
+        joined.push_back(head + tail);
+    run = std::move(joined);
+  };
+  std::vector<std::string> choices;
+  for (int i = 0; i < nsub; i++) {
+    Regexp* sub = subs[i];
+    while (sub->op() == kRegexpCapture)
+      sub = sub->sub()[0];
+    if (sub->op() == kRegexpLiteral || sub->op() == kRegexpLiteralString) {
+      const int n = sub->op() == kRegexpLiteral ? 1 : sub->nrunes();
+      for (int j = 0; j < n; j++) {
+        const Rune r =
+            sub->op() == kRegexpLiteral ? sub->rune() : sub->runes()[j];
+        choices.clear();
+        AppendRune(sub, r, &choices);
+        if ((sub->parse_flags() & Regexp::FoldCase) && r < Runeself &&
+            absl::ascii_isalpha(static_cast<unsigned char>(r))) {
+          const unsigned char c = static_cast<unsigned char>(r);
+          AppendRune(sub,
+                     absl::ascii_isupper(c) ? absl::ascii_tolower(c)
+                                            : absl::ascii_toupper(c),
+                     &choices);
+        }
+        extend(choices);
+      }
+    } else if (sub->op() == kRegexpCharClass &&
+               sub->cc()->size() <= kMaxRequiredClassRunes) {
+      choices.clear();
+      for (CharClass::iterator it = sub->cc()->begin();
+           it != sub->cc()->end(); ++it)
+        for (Rune r = it->lo; r <= it->hi; r++)
+          AppendRune(sub, r, &choices);
+      extend(choices);
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return best_size >= 2 && !best_at_start;
+}
+
 void RE2::Init(absl::string_view pattern, const Options& options) {
   static absl::once_flag empty_once;
   absl::call_once(empty_once, []() {
@@ -273,10 +370,14 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   longest_match_ = options_.longest_match();
   is_one_pass_ = false;
   prefix_foldcase_ = false;
+  has_required_set_ = false;
+  has_full_match_set_ = false;
   plan_whole_ = false;
   plan_min_size_ = 0;
   prefix_.clear();
   required_literal_.clear();
+  required_set_ = NULL;
+  full_match_set_ = NULL;
   segment_plan_ = NULL;
   prog_ = NULL;
 
@@ -336,11 +437,32 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   is_one_pass_ = prog_->IsOnePass();
 
   if (!prog_->anchor_start() && !prog_->anchor_end() &&
-      !prog_->literal_prefix_accel())
+      !prog_->literal_prefix_accel()) {
     required_literal_ = RequiredLiteral(suffix_regexp_);
+    std::vector<std::string> variants;
+    if (required_literal_.empty() &&
+        RequiredLiteralSet(suffix_regexp_, &variants)) {
+      required_set_ = new RequiredSetFinder;
+      has_required_set_ = required_set_->Build(
+          variants.size(),
+          [&](size_t i) -> absl::string_view { return variants[i]; });
+      if (!has_required_set_) {
+        delete required_set_;
+        required_set_ = NULL;
+      }
+    }
+  }
   required_finder_ = LiteralFinder(required_literal_);
   segment_plan_ = SegmentPlan::Make(entire_regexp_, options_.valid_utf8());
-  plan_whole_ = segment_plan_ != NULL && prog_->anchor_end() &&
+  std::vector<std::string> strings;
+  if (!options_.never_nl() && entire_regexp_->LiteralSet(&strings) &&
+      strings.size() > 1) {
+    full_match_set_ = new FullMatchSet;
+    full_match_set_->strings.insert(strings.begin(), strings.end());
+    has_full_match_set_ = true;
+  }
+  plan_whole_ = segment_plan_ != NULL && !has_full_match_set_ &&
+                prog_->anchor_end() &&
                 (prog_->anchor_start() || !prefix_.empty());
   if (plan_whole_)
     plan_min_size_ = segment_plan_->min_size();
@@ -374,6 +496,8 @@ RE2::~RE2() {
     delete named_groups_;
   delete rprog_;
   delete prog_;
+  delete required_set_;
+  delete full_match_set_;
   delete segment_plan_;
   if (error_arg_ != empty_string())
     delete error_arg_;
@@ -802,6 +926,14 @@ bool RE2::MatchImpl(absl::string_view text,
   else if (prog_->anchor_start() && re_anchor != ANCHOR_BOTH)
     re_anchor = ANCHOR_START;
 
+  if (has_full_match_set_ && re_anchor == ANCHOR_BOTH && nsubmatch <= 1) {
+    if (!full_match_set_->strings.contains(subtext))
+      return false;
+    if (nsubmatch == 1)
+      submatch[0] = subtext;
+    return true;
+  }
+
   if (segment_plan_ != NULL && nsubmatch <= 1 &&
       (re_anchor != UNANCHORED || !prefix_.empty()) &&
       (re_anchor == ANCHOR_BOTH || prog_->anchor_end()))
@@ -880,6 +1012,10 @@ bool RE2::MatchImpl(absl::string_view text,
       if (!required_literal_.empty() &&
           required_finder_.Find(required_literal_, subtext.data(),
                                 subtext.data() + subtext.size()) == NULL)
+        return false;
+      if (has_required_set_ &&
+          required_set_->Find(subtext.data(),
+                              subtext.data() + subtext.size()) == NULL)
         return false;
 
       if (!prog_->SearchDFA(subtext, text, anchor, kind,

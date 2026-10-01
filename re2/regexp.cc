@@ -759,6 +759,158 @@ bool Regexp::RequiredPrefixForAccel(std::string* prefix, bool* foldcase) {
   return true;
 }
 
+struct LiteralLimits {
+  size_t strings;
+  int class_runes;
+  int depth;
+};
+
+static const LiteralLimits kAccelLimits = {64, 4, 8};
+static const LiteralLimits kSetLimits = {1024, 1024, 64};
+
+static bool AppendLiterals(Regexp* re, const LiteralLimits& limits, int depth,
+                           std::vector<std::string>* out, bool* exact);
+
+static bool AppendConcat(Regexp** subs, int nsub, const LiteralLimits& limits,
+                         int depth, std::vector<std::string>* out,
+                         bool* exact) {
+  std::vector<std::string> heads;
+  if (!AppendLiterals(subs[0], limits, depth + 1, &heads, exact))
+    return false;
+  for (int i = 1; i < nsub && *exact; i++) {
+    std::vector<std::string> tails;
+    bool tail_exact;
+    if (!AppendLiterals(subs[i], limits, depth + 1, &tails, &tail_exact) ||
+        heads.size() * tails.size() > limits.strings) {
+      *exact = false;
+      break;
+    }
+    std::vector<std::string> joined;
+    for (const std::string& head : heads)
+      for (const std::string& tail : tails)
+        joined.push_back(head + tail);
+    heads = std::move(joined);
+    *exact = tail_exact;
+  }
+  out->insert(out->end(), heads.begin(), heads.end());
+  return out->size() <= limits.strings;
+}
+
+static bool AppendLiterals(Regexp* re, const LiteralLimits& limits, int depth,
+                           std::vector<std::string>* out, bool* exact) {
+  if (depth > limits.depth)
+    return false;
+  switch (re->op()) {
+    case kRegexpLiteral:
+    case kRegexpLiteralString: {
+      const bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
+      Rune single = re->op() == kRegexpLiteral ? re->rune() : 0;
+      Rune* runes = re->op() == kRegexpLiteral ? &single : re->runes();
+      const int nrunes = re->op() == kRegexpLiteral ? 1 : re->nrunes();
+      *exact = true;
+      if (!(re->parse_flags() & Regexp::FoldCase)) {
+        std::string bytes;
+        ConvertRunesToBytes(latin1, runes, nrunes, &bytes);
+        out->push_back(std::move(bytes));
+        return true;
+      }
+      std::vector<std::string> variants(1);
+      for (int i = 0; i < nrunes; i++) {
+        Rune rune = runes[i];
+        Rune other = rune;
+        if ('a' <= rune && rune <= 'z')
+          other = rune - 'a' + 'A';
+        else if ('A' <= rune && rune <= 'Z')
+          other = rune - 'A' + 'a';
+        const size_t n = variants.size();
+        if (other != rune && n * 2 > limits.strings) {
+          *exact = false;
+          break;
+        }
+        std::string bytes;
+        ConvertRunesToBytes(latin1, &rune, 1, &bytes);
+        if (other != rune) {
+          std::string other_bytes;
+          ConvertRunesToBytes(latin1, &other, 1, &other_bytes);
+          for (size_t j = 0; j < n; j++)
+            variants.push_back(variants[j] + other_bytes);
+        }
+        for (size_t j = 0; j < n; j++)
+          variants[j] += bytes;
+      }
+      if (variants.front().empty())
+        return false;
+      out->insert(out->end(), std::make_move_iterator(variants.begin()),
+                  std::make_move_iterator(variants.end()));
+      return out->size() <= limits.strings;
+    }
+    case kRegexpCharClass: {
+      CharClass* cc = re->cc();
+      if (cc->size() > limits.class_runes)
+        return false;
+      const bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
+      for (CharClass::iterator it = cc->begin(); it != cc->end(); ++it) {
+        for (Rune rune = it->lo; rune <= it->hi; rune++) {
+          std::string bytes;
+          ConvertRunesToBytes(latin1, &rune, 1, &bytes);
+          out->push_back(std::move(bytes));
+        }
+      }
+      *exact = true;
+      return out->size() <= limits.strings;
+    }
+    case kRegexpCapture:
+      return AppendLiterals(re->sub()[0], limits, depth + 1, out, exact);
+    case kRegexpAlternate:
+      *exact = true;
+      for (int i = 0; i < re->nsub(); i++) {
+        bool sub_exact;
+        if (!AppendLiterals(re->sub()[i], limits, depth + 1, out,
+                            &sub_exact) ||
+            out->size() > limits.strings)
+          return false;
+        *exact = *exact && sub_exact;
+      }
+      return true;
+    case kRegexpConcat:
+      return AppendConcat(re->sub(), re->nsub(), limits, depth, out, exact);
+    default:
+      return false;
+  }
+}
+
+bool Regexp::RequiredPrefixesForAccel(std::vector<std::string>* prefixes) {
+  prefixes->clear();
+  bool exact;
+  if (AppendLiterals(this, kAccelLimits, 0, prefixes, &exact))
+    return true;
+  prefixes->clear();
+  return false;
+}
+
+bool Regexp::LiteralSet(std::vector<std::string>* strings) {
+  strings->clear();
+  Regexp* self = this;
+  Regexp** subs = &self;
+  int nsub = 1;
+  if (op_ == kRegexpConcat) {
+    subs = sub();
+    nsub = nsub_;
+  }
+  if (nsub > 0 && subs[0]->op() == kRegexpBeginText) {
+    subs++;
+    nsub--;
+  }
+  if (nsub > 0 && subs[nsub - 1]->op() == kRegexpEndText)
+    nsub--;
+  bool exact = false;
+  if (nsub > 0 &&
+      AppendConcat(subs, nsub, kSetLimits, 0, strings, &exact) && exact)
+    return true;
+  strings->clear();
+  return false;
+}
+
 // Character class builder is a balanced binary tree (STL set)
 // containing non-overlapping, non-abutting RuneRanges.
 // The less-than operator used in the tree treats two

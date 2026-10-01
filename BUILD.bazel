@@ -18,7 +18,6 @@ cc_library(
         "re2/bitmap256.cc",
         "re2/bitmap256.h",
         "re2/bitstate.cc",
-        "re2/byte_set_finder.h",
         "re2/compile.cc",
         "re2/dfa.cc",
         "re2/filtered_re2.cc",
@@ -55,8 +54,10 @@ cc_library(
         "util/utf.h",
     ],
     hdrs = [
+        "re2/byte_set_finder.h",
         "re2/filtered_re2.h",
         "re2/literal_finder.h",
+        "re2/multi_literal_finder.h",
         "re2/re2.h",
         "re2/set.h",
         "re2/stringpiece.h",
