@@ -1182,11 +1182,16 @@ Prog* Compiler::Finish(Regexp* re) {
     std::string prefix;
     bool prefix_foldcase;
     std::vector<std::string> prefixes;
-    if (re->RequiredPrefixForAccel(&prefix, &prefix_foldcase))
-      prog_->ConfigurePrefixAccel(prefix, prefix_foldcase);
-    else if (!re->RequiredPrefixesForAccel(&prefixes) ||
-             !prog_->ConfigureMultiLiteralAccel(prefixes))
-      prog_->ConfigureFirstByteAccel();
+    const bool literal = re->RequiredPrefixForAccel(&prefix, &prefix_foldcase);
+    if (literal && !prefix_foldcase) {
+      prog_->ConfigurePrefixAccel(prefix, false);
+    } else if (!re->RequiredPrefixesForAccel(&prefixes) ||
+               !prog_->ConfigureMultiLiteralAccel(prefixes)) {
+      if (literal)
+        prog_->ConfigurePrefixAccel(prefix, true);
+      else
+        prog_->ConfigureFirstByteAccel();
+    }
   }
 
   // Record remaining memory for DFA.
