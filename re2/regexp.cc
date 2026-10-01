@@ -761,6 +761,7 @@ bool Regexp::RequiredPrefixForAccel(std::string* prefix, bool* foldcase) {
 
 static const size_t kMaxAccelPrefixes = 64;
 static const int kMaxAccelPrefixDepth = 8;
+static const int kMaxAccelClassRunes = 4;
 
 static bool AppendAccelPrefixes(Regexp* re, int depth,
                                 std::vector<std::string>* out, bool* exact) {
@@ -782,6 +783,21 @@ static bool AppendAccelPrefixes(Regexp* re, int depth,
       out->push_back(std::move(bytes));
       *exact = true;
       return true;
+    }
+    case kRegexpCharClass: {
+      CharClass* cc = re->cc();
+      if (cc->size() > kMaxAccelClassRunes)
+        return false;
+      const bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
+      for (CharClass::iterator it = cc->begin(); it != cc->end(); ++it) {
+        for (Rune rune = it->lo; rune <= it->hi; rune++) {
+          std::string bytes;
+          ConvertRunesToBytes(latin1, &rune, 1, &bytes);
+          out->push_back(std::move(bytes));
+        }
+      }
+      *exact = true;
+      return out->size() <= kMaxAccelPrefixes;
     }
     case kRegexpCapture:
       return AppendAccelPrefixes(re->sub()[0], depth + 1, out, exact);
