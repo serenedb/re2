@@ -790,6 +790,12 @@ class RE2 {
 
   re2::Prog* ReverseProg() const;
 
+  bool MatchPlan(absl::string_view subtext, size_t startpos,
+                 absl::string_view* submatch, int nsubmatch) const;
+  bool MatchImpl(absl::string_view text, size_t startpos, size_t endpos,
+                 Anchor re_anchor, absl::string_view* submatch,
+                 int nsubmatch) const;
+
   // First cache line is relatively cold fields.
   const std::string* pattern_;    // string regular expression
   Options options_;               // option flags
@@ -801,12 +807,13 @@ class RE2 {
   // Second cache line is relatively hot fields.
   // These are ordered oddly to pack everything.
   int num_captures_;              // number of capturing groups
-  ErrorCode error_code_ : 27;     // error code (27 bits is more than enough)
+  ErrorCode error_code_ : 26;     // error code (26 bits is more than enough)
   bool longest_match_ : 1;        // cached copy of options_.longest_match()
   bool is_one_pass_ : 1;          // can use prog_->SearchOnePass?
   bool prefix_foldcase_ : 1;      // prefix_ is ASCII case-insensitive
   bool has_required_set_ : 1;
   bool has_full_match_set_ : 1;
+  bool plan_whole_ : 1;
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
   LiteralFinder required_finder_;
