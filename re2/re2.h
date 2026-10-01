@@ -814,6 +814,7 @@ class RE2 {
   bool has_required_set_ : 1;
   bool has_full_match_set_ : 1;
   bool plan_whole_ : 1;
+  size_t plan_min_size_;
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
   LiteralFinder required_finder_;

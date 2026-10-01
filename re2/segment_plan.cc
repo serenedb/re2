@@ -191,7 +191,19 @@ SegmentPlan* SegmentPlan::Make(Regexp* re) {
              segments[2].begin == segments[2].end &&
              literal(segments[1], &plan.first_, &plan.first_size_)) {
     plan.shape_ = Shape::kContains;
+  } else {
+    uint32_t offset = 0;
+    uint32_t size = 0;
+    bool literals =
+        literal(segments.front(), &plan.first_, &plan.first_size_) &&
+        literal(segments.back(), &plan.last_, &plan.last_size_);
+    for (size_t i = 1; literals && i + 1 < segments.size(); i++)
+      literals = literal(segments[i], &offset, &size);
+    if (literals)
+      plan.shape_ = Shape::kSegments;
   }
+  for (const Piece& piece : plan.pieces_)
+    plan.min_size_ += piece.size + piece.skip;
   SegmentPlan* result = new SegmentPlan(std::move(plan));
   result->literals_ = result->bytes_.data();
   return result;
@@ -335,6 +347,8 @@ size_t SegmentPlan::FindFrom(const Segment& segment, absl::string_view text,
 bool SegmentPlan::Match(absl::string_view text) const {
   const char* data = text.data();
   const size_t size = text.size();
+  if (size < min_size_)
+    return false;
   switch (shape_) {
     case Shape::kGeneral:
       return MatchGeneral(text);
@@ -354,6 +368,26 @@ bool SegmentPlan::Match(absl::string_view text) const {
               data + size) == NULL)
         return false;
       break;
+    case Shape::kSegments: {
+      if (!LiteralFinder::Equal(data, literals_ + first_, first_size_) ||
+          !LiteralFinder::Equal(data + size - last_size_, literals_ + last_,
+                                last_size_))
+        return false;
+      const char* p = data + first_size_;
+      const char* limit = data + size - last_size_;
+      for (size_t i = 1; i + 1 < segments_.size(); i++) {
+        const Segment& segment = segments_[i];
+        const Piece& piece = pieces_[segment.begin];
+        if (static_cast<size_t>(limit - p) < piece.size)
+          return false;
+        const char* at = segment.finder.Find(
+            absl::string_view(literals_ + piece.offset, piece.size), p, limit);
+        if (at == NULL)
+          return false;
+        p = at + piece.size;
+      }
+      break;
+    }
   }
   if (!dot_nl_ && memchr(data, '\n', size) != NULL)
     return false;
