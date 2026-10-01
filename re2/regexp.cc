@@ -803,19 +803,46 @@ static bool AppendLiterals(Regexp* re, const LiteralLimits& limits, int depth,
   switch (re->op()) {
     case kRegexpLiteral:
     case kRegexpLiteralString: {
-      if (re->parse_flags() & Regexp::FoldCase)
-        return false;
       const bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
-      std::string bytes;
-      if (re->op() == kRegexpLiteral) {
-        Rune rune = re->rune();
-        ConvertRunesToBytes(latin1, &rune, 1, &bytes);
-      } else {
-        ConvertRunesToBytes(latin1, re->runes(), re->nrunes(), &bytes);
-      }
-      out->push_back(std::move(bytes));
+      Rune single = re->op() == kRegexpLiteral ? re->rune() : 0;
+      Rune* runes = re->op() == kRegexpLiteral ? &single : re->runes();
+      const int nrunes = re->op() == kRegexpLiteral ? 1 : re->nrunes();
       *exact = true;
-      return true;
+      if (!(re->parse_flags() & Regexp::FoldCase)) {
+        std::string bytes;
+        ConvertRunesToBytes(latin1, runes, nrunes, &bytes);
+        out->push_back(std::move(bytes));
+        return true;
+      }
+      std::vector<std::string> variants(1);
+      for (int i = 0; i < nrunes; i++) {
+        Rune rune = runes[i];
+        Rune other = rune;
+        if ('a' <= rune && rune <= 'z')
+          other = rune - 'a' + 'A';
+        else if ('A' <= rune && rune <= 'Z')
+          other = rune - 'A' + 'a';
+        const size_t n = variants.size();
+        if (other != rune && n * 2 > limits.strings) {
+          *exact = false;
+          break;
+        }
+        std::string bytes;
+        ConvertRunesToBytes(latin1, &rune, 1, &bytes);
+        if (other != rune) {
+          std::string other_bytes;
+          ConvertRunesToBytes(latin1, &other, 1, &other_bytes);
+          for (size_t j = 0; j < n; j++)
+            variants.push_back(variants[j] + other_bytes);
+        }
+        for (size_t j = 0; j < n; j++)
+          variants[j] += bytes;
+      }
+      if (variants.front().empty())
+        return false;
+      out->insert(out->end(), std::make_move_iterator(variants.begin()),
+                  std::make_move_iterator(variants.end()));
+      return out->size() <= limits.strings;
     }
     case kRegexpCharClass: {
       CharClass* cc = re->cc();
