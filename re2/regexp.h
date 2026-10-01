@@ -480,6 +480,8 @@ class Regexp {
 
   bool RequiredPrefixesForAccel(std::vector<std::string>* prefixes);
 
+  bool LiteralSet(std::vector<std::string>* strings);
+
   // Controls the maximum repeat count permitted by the parser.
   // FOR FUZZING ONLY.
   static void FUZZING_ONLY_set_maximum_repeat_count(int i);

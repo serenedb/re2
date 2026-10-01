@@ -231,6 +231,7 @@ namespace re2 {
 class Prog;
 class Regexp;
 class SegmentPlan;
+struct FullMatchSet;
 template <size_t kCapacity>
 class BasicMultiLiteralFinder;
 }  // namespace re2
@@ -800,11 +801,12 @@ class RE2 {
   // Second cache line is relatively hot fields.
   // These are ordered oddly to pack everything.
   int num_captures_;              // number of capturing groups
-  ErrorCode error_code_ : 28;     // error code (28 bits is more than enough)
+  ErrorCode error_code_ : 27;     // error code (27 bits is more than enough)
   bool longest_match_ : 1;        // cached copy of options_.longest_match()
   bool is_one_pass_ : 1;          // can use prog_->SearchOnePass?
   bool prefix_foldcase_ : 1;      // prefix_ is ASCII case-insensitive
   bool has_required_set_ : 1;
+  bool has_full_match_set_ : 1;
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
   LiteralFinder required_finder_;
@@ -823,6 +825,7 @@ class RE2 {
   mutable absl::once_flag group_names_once_;
 
   re2::BasicMultiLiteralFinder<128>* required_set_;
+  re2::FullMatchSet* full_match_set_;
 };
 
 /***** Implementation details *****/
