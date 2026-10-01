@@ -37,8 +37,16 @@ class SegmentPlan {
     LiteralFinder finder;
   };
 
+  enum class Shape : uint8_t {
+    kGeneral,
+    kExact,
+    kAffix,
+    kContains,
+  };
+
   SegmentPlan() = default;
 
+  bool MatchGeneral(absl::string_view text) const;
   size_t UnitAt(const char* p, const char* end) const;
   size_t UnitBefore(const char* begin, const char* p) const;
   bool Units(absl::string_view text) const;
@@ -52,6 +60,12 @@ class SegmentPlan {
   std::string bytes_;
   std::vector<Piece> pieces_;
   std::vector<Segment> segments_;
+  const char* literals_ = NULL;
+  uint32_t first_ = 0;
+  uint32_t first_size_ = 0;
+  uint32_t last_ = 0;
+  uint32_t last_size_ = 0;
+  Shape shape_ = Shape::kGeneral;
   bool any_string_ = false;
   bool latin1_ = false;
   bool dot_nl_ = true;

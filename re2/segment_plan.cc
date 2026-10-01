@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "absl/base/attributes.h"
 #include "re2/regexp.h"
 #include "util/utf.h"
 
@@ -167,10 +168,37 @@ SegmentPlan* SegmentPlan::Make(Regexp* re) {
     segment.finder = LiteralFinder(
         absl::string_view(plan.bytes_.data() + head.offset, head.size));
   }
-  return new SegmentPlan(std::move(plan));
+  auto literal = [&](const Segment& segment, uint32_t* offset,
+                     uint32_t* size) {
+    if (segment.begin == segment.end)
+      return true;
+    const Piece& p = plan.pieces_[segment.begin];
+    if (segment.end - segment.begin != 1 || p.skip != 0)
+      return false;
+    *offset = p.offset;
+    *size = p.size;
+    return true;
+  };
+  const std::vector<Segment>& segments = plan.segments_;
+  if (!plan.any_string_) {
+    if (literal(segments.front(), &plan.first_, &plan.first_size_))
+      plan.shape_ = Shape::kExact;
+  } else if (segments.size() == 2) {
+    if (literal(segments.front(), &plan.first_, &plan.first_size_) &&
+        literal(segments.back(), &plan.last_, &plan.last_size_))
+      plan.shape_ = Shape::kAffix;
+  } else if (segments.size() == 3 && segments[0].begin == segments[0].end &&
+             segments[2].begin == segments[2].end &&
+             literal(segments[1], &plan.first_, &plan.first_size_)) {
+    plan.shape_ = Shape::kContains;
+  }
+  SegmentPlan* result = new SegmentPlan(std::move(plan));
+  result->literals_ = result->bytes_.data();
+  return result;
 }
 
-size_t SegmentPlan::UnitAt(const char* p, const char* end) const {
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline size_t SegmentPlan::UnitAt(
+    const char* p, const char* end) const {
   if (p == end)
     return 0;
   if (latin1_)
@@ -184,7 +212,8 @@ size_t SegmentPlan::UnitAt(const char* p, const char* end) const {
   return n;
 }
 
-size_t SegmentPlan::UnitBefore(const char* begin, const char* p) const {
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline size_t SegmentPlan::UnitBefore(
+    const char* begin, const char* p) const {
   if (p == begin)
     return 0;
   if (latin1_)
@@ -228,9 +257,9 @@ bool SegmentPlan::Units(absl::string_view text) const {
   return true;
 }
 
-size_t SegmentPlan::MatchAt(const Piece* piece, const Piece* end,
-                            absl::string_view text, size_t pos,
-                            size_t limit) const {
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline size_t SegmentPlan::MatchAt(
+    const Piece* piece, const Piece* end, absl::string_view text, size_t pos,
+    size_t limit) const {
   const char* data = text.data();
   for (; piece != end; piece++) {
     for (uint32_t skip = piece->skip; skip != 0; skip--) {
@@ -248,8 +277,8 @@ size_t SegmentPlan::MatchAt(const Piece* piece, const Piece* end,
   return pos;
 }
 
-size_t SegmentPlan::MatchBefore(const Segment& segment, absl::string_view text,
-                                size_t lower) const {
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline size_t SegmentPlan::MatchBefore(
+    const Segment& segment, absl::string_view text, size_t lower) const {
   const char* data = text.data();
   const Piece* first = pieces_.data() + segment.begin;
   size_t pos = text.size();
@@ -304,6 +333,34 @@ size_t SegmentPlan::FindFrom(const Segment& segment, absl::string_view text,
 }
 
 bool SegmentPlan::Match(absl::string_view text) const {
+  const char* data = text.data();
+  const size_t size = text.size();
+  switch (shape_) {
+    case Shape::kGeneral:
+      return MatchGeneral(text);
+    case Shape::kExact:
+      return size == first_size_ &&
+             LiteralFinder::Equal(data, literals_ + first_, size);
+    case Shape::kAffix:
+      if (size < first_size_ + last_size_ ||
+          !LiteralFinder::Equal(data, literals_ + first_, first_size_) ||
+          !LiteralFinder::Equal(data + size - last_size_, literals_ + last_,
+                                last_size_))
+        return false;
+      break;
+    case Shape::kContains:
+      if (segments_[1].finder.Find(
+              absl::string_view(literals_ + first_, first_size_), data,
+              data + size) == NULL)
+        return false;
+      break;
+  }
+  if (!dot_nl_ && memchr(data, '\n', size) != NULL)
+    return false;
+  return Units(text);
+}
+
+bool SegmentPlan::MatchGeneral(absl::string_view text) const {
   const Segment& head = segments_.front();
   const Piece* pieces = pieces_.data();
   size_t pos =
