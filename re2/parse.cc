@@ -36,9 +36,9 @@
 #include "util/utf.h"
 
 #if defined(RE2_USE_ICU)
-#include "unicode/uniset.h"
-#include "unicode/unistr.h"
-#include "unicode/utypes.h"
+#include <vector>
+
+#include "unicode_properties.hpp"
 #endif
 
 namespace re2 {
@@ -1828,24 +1828,19 @@ ParseStatus ParseUnicodeGroup(absl::string_view* s,
 
   AddUGroup(cc, g, sign, parse_flags);
 #else
-  // Look up the group in the ICU Unicode data. Because ICU provides full
-  // Unicode properties support, this could be more than a lookup by name.
-  ::icu::UnicodeString ustr = ::icu::UnicodeString::fromUTF8(
-      std::string("\\p{") + std::string(name) + std::string("}"));
-  UErrorCode uerr = U_ZERO_ERROR;
-  ::icu::UnicodeSet uset(ustr, uerr);
-  if (U_FAILURE(uerr)) {
+  std::vector<duckdb::text::PropertyRange> ranges;
+  if (!duckdb::text::UnicodeProperties::Lookup(
+          std::string_view(name.data(), name.size()), ranges)) {
     status->set_code(kRegexpBadCharRange);
     status->set_error_arg(seq);
     return kParseError;
   }
 
-  // Convert the UnicodeSet to a URange32 and UGroup that we can add.
-  int nr = uset.getRangeCount();
+  int nr = static_cast<int>(ranges.size());
   PODArray<URange32> r(nr);
   for (int i = 0; i < nr; i++) {
-    r[i].lo = uset.getRangeStart(i);
-    r[i].hi = uset.getRangeEnd(i);
+    r[i].lo = ranges[i].first;
+    r[i].hi = ranges[i].last;
   }
   UGroup g = {"", +1, 0, 0, r.data(), nr};
   AddUGroup(cc, &g, sign, parse_flags);
