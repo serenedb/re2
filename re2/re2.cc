@@ -1016,6 +1016,9 @@ bool RE2::MatchImpl(absl::string_view text,
           required_set_->Find(subtext.data(),
                               subtext.data() + subtext.size()) == NULL)
         return false;
+      if (prog_->can_prefix_accel() &&
+          prog_->PrefixAccel(subtext.data(), subtext.size()) == NULL)
+        return false;
 
       if (!prog_->SearchDFA(subtext, text, anchor, kind,
                             matchp, &dfa_failed, NULL)) {
