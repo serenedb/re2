@@ -1078,6 +1078,9 @@ bool RE2::MatchImpl(absl::string_view text,
           required_set_->Find(subtext.data(),
                               subtext.data() + subtext.size()) == NULL)
         return false;
+      if (prog_->can_prefix_accel() &&
+          prog_->PrefixAccel(subtext.data(), subtext.size()) == NULL)
+        return false;
 
       if (ncap > 1) {
         int found = prog_->SearchTDFA(subtext, text, Prog::kUnanchored, kind,
