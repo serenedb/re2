@@ -141,7 +141,7 @@ class LiteralFinder {
     const char first = needle[first_];
     const char second = needle[second_];
     const char* tail = last - 31;
-    [[clang::code_align(64)]] for (; p < tail; p += 32) {
+    for (; p < tail; p += 32) {
       uint32_t mask = Hits(p, first, second);
       if (__builtin_expect(mask != 0, 0)) {
         for (; mask != 0; mask &= mask - 1) {
