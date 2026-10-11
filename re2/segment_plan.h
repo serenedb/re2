@@ -20,7 +20,7 @@ class Regexp;
 
 class SegmentPlan {
  public:
-  static SegmentPlan* Make(Regexp* re);
+  static SegmentPlan* Make(Regexp* re, bool valid_utf8);
 
   bool Match(absl::string_view text) const;
 
@@ -72,6 +72,7 @@ class SegmentPlan {
   Shape shape_ = Shape::kGeneral;
   bool any_string_ = false;
   bool latin1_ = false;
+  bool valid_utf8_ = false;
   bool dot_nl_ = true;
 };
 

@@ -72,7 +72,8 @@ RE2::Options::Options(RE2::CannedOptions opt)
     perl_classes_(false),
     word_boundary_(false),
     one_line_(false),
-    thread_safe_(true) {
+    thread_safe_(true),
+    valid_utf8_(false) {
 }
 
 // Empty objects for use as const references.
@@ -548,7 +549,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     }
   }
   required_finder_ = LiteralFinder(required_literal_);
-  segment_plan_ = SegmentPlan::Make(entire_regexp_);
+  segment_plan_ = SegmentPlan::Make(entire_regexp_, options_.valid_utf8());
   std::vector<std::string> strings;
   if (!options_.never_nl() && entire_regexp_->LiteralSet(&strings) &&
       strings.size() > 1) {
@@ -563,6 +564,8 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     plan_min_size_ = segment_plan_->min_size();
   if (!longest_match_ && num_captures_ > 0)
     SplitTail(suffix_regexp_, &tail_);
+  if (tail_ != 0 && options_.valid_utf8())
+    tail_ |= kTailBytes;
 }
 
 // Returns rprog_, computing it if needed.
@@ -993,9 +996,13 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool RE2::MatchPlan(
 bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
                     bool anchored, bool to_end, absl::string_view* submatch,
                     int ncap, bool* matched) const {
-  if (to_end && !(tail_ & kTailNewline) && !subtext.empty() &&
-      memchr(subtext.data(), '\n', subtext.size()) != NULL)
-    return false;
+  int tail = tail_;
+  if (to_end && !(tail & kTailNewline)) {
+    if (!subtext.empty() &&
+        memchr(subtext.data(), '\n', subtext.size()) != NULL)
+      return false;
+    tail |= kTailNewline;
+  }
   Prog* prog = HeadProg();
   if (prog == NULL)
     return false;
@@ -1015,8 +1022,8 @@ bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
   const char* head_end = EndPtr(submatch[0]);
   const size_t rest = static_cast<size_t>(EndPtr(subtext) - head_end);
   size_t span = 0;
-  if (to_end || !(tail_ & kTailLazy)) {
-    span = TailSpan(head_end, rest, tail_);
+  if (to_end || !(tail & kTailLazy)) {
+    span = TailSpan(head_end, rest, tail);
     if (to_end && span != rest)
       return false;
   }

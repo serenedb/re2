@@ -54,7 +54,7 @@ bool IsAnyExceptNewline(Regexp* re) {
 
 }  // namespace
 
-SegmentPlan* SegmentPlan::Make(Regexp* re) {
+SegmentPlan* SegmentPlan::Make(Regexp* re, bool valid_utf8) {
   if (re->parse_flags() & Regexp::NeverNL)
     return NULL;
   Regexp** subs = &re;
@@ -72,6 +72,7 @@ SegmentPlan* SegmentPlan::Make(Regexp* re) {
 
   SegmentPlan plan;
   plan.latin1_ = (re->parse_flags() & Regexp::Latin1) != 0;
+  plan.valid_utf8_ = valid_utf8;
   int dot = -1;
   bool newline_literal = false;
   Piece piece{0, 0, 0};
@@ -240,7 +241,7 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline size_t SegmentPlan::UnitBefore(
 }
 
 bool SegmentPlan::Units(absl::string_view text) const {
-  if (latin1_)
+  if (latin1_ || valid_utf8_)
     return true;
   const char* p = text.data();
   const char* end = p + text.size();
