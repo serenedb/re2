@@ -41,6 +41,17 @@ TEST(LineEnds, Exhaustive) {
                  4, Explode("ab\n"), "", "");
 }
 
+// Test that a trailing .* or .*$ leaves the submatches before it alone,
+// with lines and bytes that the dot cannot match.
+TEST(TrailingAny, Submatches) {
+  std::vector<std::string> ops = Split(" ", "%s%s %s|%s %s* %s? (%s)");
+  std::vector<std::string> tops = Split(
+      " ", "(?:%s).* (?:%s).*$ (?:%s).*?$ (?s:(?:%s).*$) (?:%s)\\C*$");
+  for (const std::string& top : tops)
+    ExhaustiveTest(2, 2, Split(" ", "a ab ."), ops,
+                   3, Split(" ", "a b \n \xff"), "", top);
+}
+
 // Test what does and does not match \n.
 // This would be a good test, except that PCRE seems to have a bug:
 // in single-byte character set mode (the default),
