@@ -1086,7 +1086,7 @@ bool RE2::MatchImpl(absl::string_view text,
     ncap = nsubmatch;
 
   // If the regexp is anchored explicitly, must not be in middle of text.
-  if (prog_->anchor_start() && startpos != 0)
+  if ((prog_->anchor_start() || !prefix_.empty()) && startpos != 0)
     return false;
   if (prog_->anchor_end() && endpos != text.size())
     return false;
