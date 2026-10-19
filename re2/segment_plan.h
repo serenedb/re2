@@ -22,6 +22,9 @@ class SegmentPlan {
  public:
   static SegmentPlan* Make(Regexp* re, bool valid_utf8);
 
+  static SegmentPlan* MakeLike(absl::string_view pattern, bool has_escape,
+                               char escape, bool valid_utf8);
+
   bool Match(absl::string_view text) const;
 
   size_t min_size() const { return min_size_; }
@@ -48,6 +51,10 @@ class SegmentPlan {
   };
 
   SegmentPlan() = default;
+
+  static SegmentPlan* Finish(SegmentPlan plan);
+  void ClosePiece(Piece* piece);
+  void CloseSegment(Piece* piece, uint32_t* begin);
 
   bool MatchGeneral(absl::string_view text) const;
   size_t UnitAt(const char* p, const char* end) const;

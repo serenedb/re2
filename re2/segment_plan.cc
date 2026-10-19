@@ -54,6 +54,19 @@ bool IsAnyExceptNewline(Regexp* re) {
 
 }  // namespace
 
+void SegmentPlan::ClosePiece(Piece* piece) {
+  if (piece->skip != 0 || piece->size != 0)
+    pieces_.push_back(*piece);
+  *piece = {0, static_cast<uint32_t>(bytes_.size()), 0};
+}
+
+void SegmentPlan::CloseSegment(Piece* piece, uint32_t* begin) {
+  ClosePiece(piece);
+  const uint32_t end = static_cast<uint32_t>(pieces_.size());
+  segments_.push_back({*begin, end, LiteralFinder()});
+  *begin = end;
+}
+
 SegmentPlan* SegmentPlan::Make(Regexp* re, bool valid_utf8) {
   if (re->parse_flags() & Regexp::NeverNL)
     return NULL;
@@ -77,17 +90,6 @@ SegmentPlan* SegmentPlan::Make(Regexp* re, bool valid_utf8) {
   bool newline_literal = false;
   Piece piece{0, 0, 0};
   uint32_t begin = 0;
-  auto close_piece = [&]() {
-    if (piece.skip != 0 || piece.size != 0)
-      plan.pieces_.push_back(piece);
-    piece = {0, static_cast<uint32_t>(plan.bytes_.size()), 0};
-  };
-  auto close_segment = [&]() {
-    close_piece();
-    const uint32_t end = static_cast<uint32_t>(plan.pieces_.size());
-    plan.segments_.push_back({begin, end, LiteralFinder()});
-    begin = end;
-  };
   auto unit_kind = [&](Regexp* sub) {
     if (sub->op() == kRegexpAnyChar)
       return 1;
@@ -134,7 +136,7 @@ SegmentPlan* SegmentPlan::Make(Regexp* re, bool valid_utf8) {
           break;
         }
         dot = kind;
-        close_segment();
+        plan.CloseSegment(&piece, &begin);
         plan.any_string_ = true;
         break;
       }
@@ -146,7 +148,7 @@ SegmentPlan* SegmentPlan::Make(Regexp* re, bool valid_utf8) {
         }
         dot = kind;
         if (piece.size != 0)
-          close_piece();
+          plan.ClosePiece(&piece);
         piece.skip++;
         break;
       }
@@ -155,7 +157,40 @@ SegmentPlan* SegmentPlan::Make(Regexp* re, bool valid_utf8) {
   plan.dot_nl_ = dot != 0;
   if (!fits || (!plan.dot_nl_ && newline_literal))
     return NULL;
-  close_segment();
+  plan.CloseSegment(&piece, &begin);
+  return Finish(std::move(plan));
+}
+
+SegmentPlan* SegmentPlan::MakeLike(absl::string_view pattern, bool has_escape,
+                                   char escape, bool valid_utf8) {
+  SegmentPlan plan;
+  plan.valid_utf8_ = valid_utf8;
+  Piece piece{0, 0, 0};
+  uint32_t begin = 0;
+  for (size_t i = 0; i < pattern.size(); i++) {
+    char c = pattern[i];
+    if (has_escape && c == escape) {
+      if (++i == pattern.size())
+        return NULL;
+      c = pattern[i];
+    } else if (c == '%') {
+      plan.CloseSegment(&piece, &begin);
+      plan.any_string_ = true;
+      continue;
+    } else if (c == '_') {
+      if (piece.size != 0)
+        plan.ClosePiece(&piece);
+      piece.skip++;
+      continue;
+    }
+    plan.bytes_ += c;
+    piece.size++;
+  }
+  plan.CloseSegment(&piece, &begin);
+  return Finish(std::move(plan));
+}
+
+SegmentPlan* SegmentPlan::Finish(SegmentPlan plan) {
   if (plan.segments_.size() > 2) {
     auto middle = std::remove_if(
         plan.segments_.begin() + 1, plan.segments_.end() - 1,
