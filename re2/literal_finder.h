@@ -9,7 +9,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <algorithm>
+#include <utility>
+
 #include "absl/log/absl_check.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/string_view.h"
 
 namespace re2 {
@@ -94,7 +98,7 @@ class LiteralFinder {
     const char* last = end - n;
 #if defined(__clang__)
     if (last - p >= 31)
-      return Scan(needle, p, last);
+      return Scan<false>(needle, p, last);
 #endif
     const char first = needle[first_];
     const char second = needle[second_];
@@ -111,65 +115,154 @@ class LiteralFinder {
     return NULL;
   }
 
-  static bool Equal(const char* a, const char* b, size_t n) {
-    if (n >= 8) {
-      for (size_t i = 0; i + 8 < n; i += 8)
-        if (!Same<uint64_t>(a + i, b + i))
-          return false;
-      return Same<uint64_t>(a + n - 8, b + n - 8);
+  const char* FindIgnoreCase(absl::string_view needle, const char* p,
+                             const char* end) const {
+    ABSL_DCHECK_EQ(needle.size(), size_);
+    ABSL_DCHECK(std::none_of(needle.begin(), needle.end(),
+                             [](char c) { return absl::ascii_isupper(c); }));
+    const size_t n = size_;
+    if (static_cast<size_t>(end - p) < n)
+      return NULL;
+    if (n == 0)
+      return p;
+    const char* last = end - n;
+#if defined(__clang__)
+    if (last - p >= 31)
+      return Scan<true>(needle, p, last);
+#endif
+    size_t rare = first_;
+    size_t other = second_;
+    if (Rank(needle[other]) < Rank(needle[rare]))
+      std::swap(rare, other);
+    const char rare_byte = needle[rare];
+    const char rare_case = CaseBit(rare_byte);
+    const char other_byte = needle[other];
+    const char other_case = CaseBit(other_byte);
+    if (rare_case == 0) {
+      while (p <= last) {
+        const char* hit = static_cast<const char*>(
+            memchr(p + rare, rare_byte, static_cast<size_t>(last - p) + 1));
+        if (hit == NULL)
+          return NULL;
+        p = hit - rare;
+        if ((p[other] | other_case) == other_byte &&
+            EqualIgnoreCase(p, needle.data(), n))
+          return p;
+        p++;
+      }
+      return NULL;
     }
-    if (n >= 4)
-      return Same<uint32_t>(a, b) && Same<uint32_t>(a + n - 4, b + n - 4);
-    if (n >= 2)
-      return Same<uint16_t>(a, b) && Same<uint16_t>(a + n - 2, b + n - 2);
-    return n == 0 || *a == *b;
+    const char upper_byte = static_cast<char>(rare_byte ^ rare_case);
+    const char* probe_end = last + rare + 1;
+    const char* lower_hit = static_cast<const char*>(
+        memchr(p + rare, rare_byte, static_cast<size_t>(probe_end - p - rare)));
+    const char* upper_hit = static_cast<const char*>(
+        memchr(p + rare, upper_byte, static_cast<size_t>(probe_end - p - rare)));
+    while (lower_hit != NULL || upper_hit != NULL) {
+      const bool lower =
+          upper_hit == NULL || (lower_hit != NULL && lower_hit < upper_hit);
+      const char* hit = lower ? lower_hit : upper_hit;
+      p = hit - rare;
+      if ((p[other] | other_case) == other_byte &&
+          EqualIgnoreCase(p, needle.data(), n))
+        return p;
+      const size_t rest = static_cast<size_t>(probe_end - hit - 1);
+      if (lower)
+        lower_hit =
+            static_cast<const char*>(memchr(hit + 1, rare_byte, rest));
+      else
+        upper_hit =
+            static_cast<const char*>(memchr(hit + 1, upper_byte, rest));
+    }
+    return NULL;
+  }
+
+  static bool Equal(const char* a, const char* b, size_t n) {
+    return Compare<false>(a, b, n);
+  }
+
+  static bool EqualIgnoreCase(const char* text, const char* needle, size_t n) {
+    return Compare<true>(text, needle, n);
   }
 
  private:
-  template <typename T>
+  template <bool kIgnoreCase>
+  static bool Compare(const char* a, const char* b, size_t n) {
+    if (n >= 8) {
+      for (size_t i = 0; i + 8 < n; i += 8)
+        if (!Same<uint64_t, kIgnoreCase>(a + i, b + i))
+          return false;
+      return Same<uint64_t, kIgnoreCase>(a + n - 8, b + n - 8);
+    }
+    if (n >= 4)
+      return Same<uint32_t, kIgnoreCase>(a, b) &&
+             Same<uint32_t, kIgnoreCase>(a + n - 4, b + n - 4);
+    if (n >= 2)
+      return Same<uint16_t, kIgnoreCase>(a, b) &&
+             Same<uint16_t, kIgnoreCase>(a + n - 2, b + n - 2);
+    return n == 0 || Same<uint8_t, kIgnoreCase>(a, b);
+  }
+
+  template <typename T, bool kIgnoreCase>
   static bool Same(const char* a, const char* b) {
     T x;
     T y;
     memcpy(&x, a, sizeof(x));
     memcpy(&y, b, sizeof(y));
-    return x == y;
+    return (kIgnoreCase ? LowerAscii(x) : x) == y;
   }
 
+  template <typename T>
+  static T LowerAscii(T x) {
+    constexpr T kBytes = static_cast<T>(~T{0}) / 0xFF;
+    const T low = static_cast<T>(x & kBytes * 0x7F);
+    const T upper = static_cast<T>((low + kBytes * 0x3F) &
+                                   ~(low + kBytes * 0x25) & ~x &
+                                   kBytes * 0x80);
+    return static_cast<T>(x | upper >> 2);
+  }
+
+  static char CaseBit(char c) { return absl::ascii_islower(c) ? 0x20 : 0; }
+
 #if defined(__clang__)
+  template <bool kIgnoreCase>
   const char* Scan(absl::string_view needle, const char* p,
                    const char* last) const {
     const char first = needle[first_];
     const char second = needle[second_];
+    const char first_case = kIgnoreCase ? CaseBit(first) : 0;
+    const char second_case = kIgnoreCase ? CaseBit(second) : 0;
     const char* tail = last - 31;
     for (; p < tail; p += 32) {
-      uint32_t mask = Hits(p, first, second);
+      uint32_t mask = Hits(p, first, first_case, second, second_case);
       if (__builtin_expect(mask != 0, 0)) {
         for (; mask != 0; mask &= mask - 1) {
           const char* at = p + __builtin_ctz(mask);
-          if (Equal(at, needle.data(), needle.size()))
+          if (Compare<kIgnoreCase>(at, needle.data(), needle.size()))
             return at;
         }
       }
     }
-    uint32_t mask = Hits(tail, first, second) &
+    uint32_t mask = Hits(tail, first, first_case, second, second_case) &
                     (~uint32_t{0} << static_cast<uint32_t>(p - tail));
     for (; mask != 0; mask &= mask - 1) {
       const char* at = tail + __builtin_ctz(mask);
-      if (Equal(at, needle.data(), needle.size()))
+      if (Compare<kIgnoreCase>(at, needle.data(), needle.size()))
         return at;
     }
     return NULL;
   }
 
-  uint32_t Hits(const char* p, char first, char second) const {
+  uint32_t Hits(const char* p, char first, char first_case, char second,
+                char second_case) const {
     using Block = char __attribute__((vector_size(32)));
     using Bits = bool __attribute__((ext_vector_type(32)));
     Block a;
     Block b;
     memcpy(&a, p + first_, sizeof(a));
     memcpy(&b, p + second_, sizeof(b));
-    const Bits hits = __builtin_convertvector((a == first) & (b == second),
-                                              Bits);
+    const Bits hits = __builtin_convertvector(
+        ((a | first_case) == first) & ((b | second_case) == second), Bits);
     uint32_t mask;
     memcpy(&mask, &hits, sizeof(mask));
     return mask;
@@ -182,7 +275,7 @@ class LiteralFinder {
 
   size_t size_ = 0;
   size_t first_ = 0;
-  size_t second_ = 1;
+  size_t second_ = 0;
 };
 
 }  // namespace re2
