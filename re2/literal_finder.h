@@ -99,6 +99,11 @@ class LiteralFinder {
 #if defined(__clang__)
     if (last - p >= 31)
       return Scan<false, 32>(needle, p, last);
+    if (last - p >= 7) {
+      if (last - p >= 15)
+        return Scan<false, 16>(needle, p, last);
+      return Scan<false, 8>(needle, p, last);
+    }
 #endif
     const char first = needle[first_];
     const char second = needle[second_];
