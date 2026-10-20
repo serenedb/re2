@@ -1695,6 +1695,10 @@ TEST(RE2, ValidUTF8KeepsSubmatches) {
     "a(b).*?$",
     "(?s)a(b).*$",
     "a(b)[^\\n]*$",
+    "^(a)\\C.*$",
+    "^(a)\\C.*",
+    "a(?:\\C|(é)).*$",
+    "(a)\\C\\C.*?$",
   };
   const char* texts[] = {
     "https://www.пример.рф/путь/страница?q=значение",
@@ -1702,6 +1706,9 @@ TEST(RE2, ValidUTF8KeepsSubmatches) {
     "key=значение\nдалее",
     "xab0123456789абвгдежзийклмн",
     "ab\nдом",
+    "aé",
+    "aéb",
+    "xaдом",
     "",
   };
   RE2::Options options;

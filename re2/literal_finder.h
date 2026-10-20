@@ -98,7 +98,12 @@ class LiteralFinder {
     const char* last = end - n;
 #if defined(__clang__)
     if (last - p >= 31)
-      return Scan<false>(needle, p, last);
+      return Scan<false, 32>(needle, p, last);
+    if (last - p >= 7) {
+      if (last - p >= 15)
+        return Scan<false, 16>(needle, p, last);
+      return Scan<false, 8>(needle, p, last);
+    }
 #endif
     const char first = needle[first_];
     const char second = needle[second_];
@@ -128,7 +133,12 @@ class LiteralFinder {
     const char* last = end - n;
 #if defined(__clang__)
     if (last - p >= 31)
-      return Scan<true>(needle, p, last);
+      return Scan<true, 32>(needle, p, last);
+    if (last - p >= 7) {
+      if (last - p >= 15)
+        return Scan<true, 16>(needle, p, last);
+      return Scan<true, 8>(needle, p, last);
+    }
 #endif
     size_t rare = first_;
     size_t other = second_;
@@ -152,28 +162,11 @@ class LiteralFinder {
       }
       return NULL;
     }
-    const char upper_byte = static_cast<char>(rare_byte ^ rare_case);
-    const char* probe_end = last + rare + 1;
-    const char* lower_hit = static_cast<const char*>(
-        memchr(p + rare, rare_byte, static_cast<size_t>(probe_end - p - rare)));
-    const char* upper_hit = static_cast<const char*>(
-        memchr(p + rare, upper_byte, static_cast<size_t>(probe_end - p - rare)));
-    while (lower_hit != NULL || upper_hit != NULL) {
-      const bool lower =
-          upper_hit == NULL || (lower_hit != NULL && lower_hit < upper_hit);
-      const char* hit = lower ? lower_hit : upper_hit;
-      p = hit - rare;
-      if ((p[other] | other_case) == other_byte &&
+    for (; p <= last; p++)
+      if ((p[rare] | rare_case) == rare_byte &&
+          (p[other] | other_case) == other_byte &&
           EqualIgnoreCase(p, needle.data(), n))
         return p;
-      const size_t rest = static_cast<size_t>(probe_end - hit - 1);
-      if (lower)
-        lower_hit =
-            static_cast<const char*>(memchr(hit + 1, rare_byte, rest));
-      else
-        upper_hit =
-            static_cast<const char*>(memchr(hit + 1, upper_byte, rest));
-    }
     return NULL;
   }
 
@@ -225,16 +218,16 @@ class LiteralFinder {
   static char CaseBit(char c) { return absl::ascii_islower(c) ? 0x20 : 0; }
 
 #if defined(__clang__)
-  template <bool kIgnoreCase>
+  template <bool kIgnoreCase, int kWidth>
   const char* Scan(absl::string_view needle, const char* p,
                    const char* last) const {
     const char first = needle[first_];
     const char second = needle[second_];
     const char first_case = kIgnoreCase ? CaseBit(first) : 0;
     const char second_case = kIgnoreCase ? CaseBit(second) : 0;
-    const char* tail = last - 31;
-    for (; p < tail; p += 32) {
-      uint32_t mask = Hits(p, first, first_case, second, second_case);
+    const char* tail = last - (kWidth - 1);
+    for (; p < tail; p += kWidth) {
+      uint32_t mask = Hits<kWidth>(p, first, first_case, second, second_case);
       if (__builtin_expect(mask != 0, 0)) {
         for (; mask != 0; mask &= mask - 1) {
           const char* at = p + __builtin_ctz(mask);
@@ -243,7 +236,7 @@ class LiteralFinder {
         }
       }
     }
-    uint32_t mask = Hits(tail, first, first_case, second, second_case) &
+    uint32_t mask = Hits<kWidth>(tail, first, first_case, second, second_case) &
                     (~uint32_t{0} << static_cast<uint32_t>(p - tail));
     for (; mask != 0; mask &= mask - 1) {
       const char* at = tail + __builtin_ctz(mask);
@@ -253,18 +246,19 @@ class LiteralFinder {
     return NULL;
   }
 
+  template <int kWidth>
   uint32_t Hits(const char* p, char first, char first_case, char second,
                 char second_case) const {
-    using Block = char __attribute__((vector_size(32)));
-    using Bits = bool __attribute__((ext_vector_type(32)));
+    using Block = char __attribute__((vector_size(kWidth)));
+    using Bits = bool __attribute__((ext_vector_type(kWidth)));
     Block a;
     Block b;
     memcpy(&a, p + first_, sizeof(a));
     memcpy(&b, p + second_, sizeof(b));
     const Bits hits = __builtin_convertvector(
         ((a | first_case) == first) & ((b | second_case) == second), Bits);
-    uint32_t mask;
-    memcpy(&mask, &hits, sizeof(mask));
+    uint32_t mask = 0;
+    memcpy(&mask, &hits, sizeof(hits));
     return mask;
   }
 #endif
