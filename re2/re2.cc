@@ -358,6 +358,7 @@ enum {
   kTailLazy = 1 << 2,
   kTailNewline = 1 << 3,
   kTailBytes = 1 << 4,
+  kTailUtf8 = 1 << 5,
 };
 
 static int SplitTail(Regexp* re, int* tail) {
@@ -564,8 +565,8 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     plan_min_size_ = segment_plan_->min_size();
   if (!longest_match_ && num_captures_ > 0)
     SplitTail(suffix_regexp_, &tail_);
-  if (tail_ != 0 && options_.valid_utf8())
-    tail_ |= kTailBytes;
+  if (tail_ != 0 && options_.valid_utf8() && !(tail_ & kTailBytes))
+    tail_ |= kTailBytes | kTailUtf8;
 }
 
 // Returns rprog_, computing it if needed.
@@ -1021,6 +1022,9 @@ bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
     return true;
   const char* head_end = EndPtr(submatch[0]);
   const size_t rest = static_cast<size_t>(EndPtr(subtext) - head_end);
+  if ((tail & kTailUtf8) && rest != 0 &&
+      (static_cast<uint8_t>(*head_end) & 0xC0) == 0x80)
+    return false;
   size_t span = 0;
   if (to_end || !(tail & kTailLazy)) {
     span = TailSpan(head_end, rest, tail);
