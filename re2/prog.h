@@ -243,6 +243,17 @@ class Prog {
   void set_dfa_mem(int64_t dfa_mem) { dfa_mem_ = dfa_mem; }
   bool thread_safe() { return thread_safe_; }
   void set_thread_safe(bool b) { thread_safe_ = b; }
+
+  struct BitStateJob {
+    int id;
+    int rle;
+    const char* p;
+  };
+  struct BitStateScratch {
+    PODArray<uint64_t> visited;
+    PODArray<const char*> cap;
+    PODArray<BitStateJob> job;
+  };
   bool anchor_start() { return anchor_start_; }
   void set_anchor_start(bool b) { anchor_start_ = b; }
   bool anchor_end() { return anchor_end_; }
@@ -446,6 +457,7 @@ class Prog {
   void DeleteDFA(DFA<kThreadSafe>* dfa);
 
   bool thread_safe_;
+  BitStateScratch bit_state_scratch_;
   bool anchor_start_;       // regexp has explicit start anchor
   bool anchor_end_;         // regexp has explicit end anchor
   bool reversed_;           // whether program runs backward over input

@@ -33,15 +33,11 @@
 
 namespace re2 {
 
-struct Job {
-  int id;
-  int rle;  // run length encoding
-  const char* p;
-};
+using Job = Prog::BitStateJob;
 
 class BitState {
  public:
-  explicit BitState(Prog* prog);
+  BitState(Prog* prog, Prog::BitStateScratch& scratch);
 
   // The usual Search prototype.
   // Can only call Search once per BitState.
@@ -66,22 +62,27 @@ class BitState {
 
   // Search state
   static constexpr int kVisitedBits = 64;
-  PODArray<uint64_t> visited_;  // bitmap: (list ID, char*) pairs visited
-  PODArray<const char*> cap_;   // capture registers
-  PODArray<Job> job_;           // stack of text positions to explore
-  int njob_;                    // stack size
+  PODArray<uint64_t>& visited_;  // bitmap: (list ID, char*) pairs visited
+  PODArray<const char*>& cap_;   // capture registers
+  PODArray<Job>& job_;           // stack of text positions to explore
+  int ncap_;                     // capture registers in use
+  int njob_;                     // stack size
 
   BitState(const BitState&) = delete;
   BitState& operator=(const BitState&) = delete;
 };
 
-BitState::BitState(Prog* prog)
+BitState::BitState(Prog* prog, Prog::BitStateScratch& scratch)
   : prog_(prog),
     anchored_(false),
     longest_(false),
     endmatch_(false),
     submatch_(NULL),
     nsubmatch_(0),
+    visited_(scratch.visited),
+    cap_(scratch.cap),
+    job_(scratch.job),
+    ncap_(0),
     njob_(0) {
 }
 
@@ -215,7 +216,7 @@ bool BitState::TrySearch(int id0, const char* p0) {
         if (!ip->last())
           Push(id+1, p);  // try the next when we're done
 
-        if (0 <= ip->cap() && ip->cap() < cap_.size()) {
+        if (0 <= ip->cap() && ip->cap() < ncap_) {
           // Capture p to register, but save old value first.
           Push(-id, cap_[ip->cap()]);  // undo when we're done
           cap_[ip->cap()] = p;
@@ -315,17 +316,20 @@ bool BitState::Search(absl::string_view text, absl::string_view context,
   // Allocate scratch space.
   int nvisited = prog_->list_count() * static_cast<int>(text.size()+1);
   nvisited = (nvisited + kVisitedBits-1) / kVisitedBits;
-  visited_ = PODArray<uint64_t>(nvisited);
+  if (visited_.size() < nvisited)
+    visited_ = PODArray<uint64_t>(nvisited);
   memset(visited_.data(), 0, nvisited*sizeof visited_[0]);
 
-  int ncap = 2*nsubmatch;
-  if (ncap < 2)
-    ncap = 2;
-  cap_ = PODArray<const char*>(ncap);
-  memset(cap_.data(), 0, ncap*sizeof cap_[0]);
+  ncap_ = 2*nsubmatch;
+  if (ncap_ < 2)
+    ncap_ = 2;
+  if (cap_.size() < ncap_)
+    cap_ = PODArray<const char*>(ncap_);
+  memset(cap_.data(), 0, ncap_*sizeof cap_[0]);
 
   // When sizeof(Job) == 16, we start with a nice round 1KiB. :)
-  job_ = PODArray<Job>(64);
+  if (job_.size() < 64)
+    job_ = PODArray<Job>(64);
 
   // Anchored search must start at text.begin().
   if (anchored_) {
@@ -376,7 +380,8 @@ bool Prog::SearchBitState(absl::string_view text, absl::string_view context,
   }
 
   // Run the search.
-  BitState b(this);
+  BitStateScratch scratch;
+  BitState b(this, thread_safe_ ? scratch : bit_state_scratch_);
   bool anchored = anchor == kAnchored;
   bool longest = kind != kFirstMatch;
   if (!b.Search(text, context, anchored, longest, match, nmatch))
