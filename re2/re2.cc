@@ -516,6 +516,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   rprog_ = NULL;
   hprog_ = NULL;
   hplan_ = NULL;
+  plan_ = NULL;
   named_groups_ = NULL;
   group_names_ = NULL;
 
@@ -602,6 +603,8 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     plan_min_size_ = segment_plan_->min_size();
   if (!longest_match_ && num_captures_ > 0)
     SplitTail(suffix_regexp_, &tail_);
+  if (!longest_match_ && num_captures_ > 0 && tail_ == 0)
+    plan_ = CapturePlan::Make(suffix_regexp_, options_.valid_utf8());
   uint64_t run_bits[4] = {};
   if (!options_.never_nl() && ClassRunBits(entire_regexp_, run_bits))
     class_run_ = class_run_finder_.Build(run_bits);
@@ -669,6 +672,7 @@ RE2::~RE2() {
   delete rprog_;
   delete hprog_;
   delete hplan_;
+  delete plan_;
   delete prog_;
   delete required_set_;
   delete full_match_set_;
@@ -1381,6 +1385,12 @@ bool RE2::MatchImpl(absl::string_view text,
                   ncap, &matched)) {
       if (!matched)
         return false;
+    } else if (plan_ != NULL && anchor != Prog::kUnanchored &&
+               ncap <= plan_->max_submatch() &&
+               !(options_.valid_utf8() && CutsCharacter(text, subtext1)) &&
+               plan_->Match(subtext1, submatch, ncap) &&
+               (kind != Prog::kFullMatch ||
+                EndPtr(submatch[0]) == EndPtr(subtext1))) {
     } else if (can_one_pass && anchor != Prog::kUnanchored) {
       if (!prog_->SearchOnePass(subtext1, text, anchor, kind, submatch, ncap)) {
         if (!skipped_test && options_.log_errors())

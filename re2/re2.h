@@ -839,6 +839,7 @@ class RE2 {
   mutable re2::Prog* rprog_;
   mutable re2::Prog* hprog_;
   mutable re2::CapturePlan* hplan_;
+  re2::CapturePlan* plan_;
   // Map from capture names to indices
   mutable const std::map<std::string, int>* named_groups_;
   // Map from capture indices to names

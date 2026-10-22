@@ -10,6 +10,7 @@
 #include "absl/strings/string_view.h"
 #include "gtest/gtest.h"
 #include "re2/prog.h"
+#include "re2/re2.h"
 #include "re2/regexp.h"
 
 namespace re2 {
@@ -76,6 +77,54 @@ TEST(CapturePlan, MatchesBacktracking) {
         ASSERT_EQ(expected[i].size(), actual[i].size())
             << pattern.regexp << " group " << i << " on "
             << absl::CEscape(text);
+      }
+    }
+    re->Decref();
+  }
+}
+
+TEST(CapturePlan, RE2MatchAgreesWithBacktracking) {
+  const struct {
+    RE2::Anchor re_anchor;
+    Prog::Anchor anchor;
+    Prog::MatchKind kind;
+  } kModes[] = {
+      {RE2::UNANCHORED, Prog::kUnanchored, Prog::kFirstMatch},
+      {RE2::ANCHOR_START, Prog::kAnchored, Prog::kFirstMatch},
+      {RE2::ANCHOR_BOTH, Prog::kAnchored, Prog::kFullMatch},
+  };
+  for (const Pattern& pattern : kPatterns) {
+    RE2::Options options;
+    options.set_valid_utf8(pattern.bytewise);
+    RE2 re2(pattern.regexp, options);
+    ASSERT_TRUE(re2.ok()) << pattern.regexp;
+    Regexp* re = Regexp::Parse(pattern.regexp, Regexp::LikePerl, NULL);
+    ASSERT_TRUE(re != NULL) << pattern.regexp;
+    std::unique_ptr<Prog> prog(re->CompileToProg(0));
+    ASSERT_TRUE(prog != NULL) << pattern.regexp;
+    const int ncap = 1 + re->NumCaptures();
+    for (const auto& mode : kModes) {
+      uint64_t seed = 7;
+      for (int iteration = 0; iteration < 20000; iteration++) {
+        const std::string text = RandomText(&seed) + RandomText(&seed);
+        std::vector<absl::string_view> expected(ncap);
+        std::vector<absl::string_view> actual(ncap);
+        const bool want = prog->UnsafeSearchBacktrack(
+            text, text, mode.anchor, mode.kind, expected.data(), ncap);
+        const bool got = re2.Match(text, 0, text.size(), mode.re_anchor,
+                                   actual.data(), ncap);
+        ASSERT_EQ(want, got) << pattern.regexp << " on "
+                             << absl::CEscape(text);
+        if (!want)
+          continue;
+        for (int i = 0; i < ncap; i++) {
+          ASSERT_EQ(expected[i].data(), actual[i].data())
+              << pattern.regexp << " group " << i << " on "
+              << absl::CEscape(text);
+          ASSERT_EQ(expected[i].size(), actual[i].size())
+              << pattern.regexp << " group " << i << " on "
+              << absl::CEscape(text);
+        }
       }
     }
     re->Decref();
