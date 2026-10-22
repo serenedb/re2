@@ -19,6 +19,7 @@
 
 #include "absl/base/macros.h"
 #include "absl/log/absl_log.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "gtest/gtest.h"
@@ -1755,6 +1756,48 @@ TEST(RE2, ValidUTF8KeepsWholeTextMatches) {
       EXPECT_EQ(RE2::PartialMatch(text, plain),
                 RE2::PartialMatch(text, valid))
           << pattern << " " << text;
+    }
+  }
+}
+
+TEST(RE2, ClassRunMatchesGeneralPath) {
+  const char* patterns[] = {
+      "[0-9]+", "a+", "(?i)b+", "[a-zA-Z_]+", "\\w+", "[\\n ]+",
+      "(?i)k+", "[^a]+", "x+?", "\\d+",
+  };
+  const char* texts[] = {
+      "", "abc", "12ab345", "\xc3\xa9" "12\xc3\xa9" "3", "a\nb  c", "kKKk",
+      "bBb", "x", "0123456789012345678901234567890123456789x0", "ab_c9 \xe2\x82\xac",
+  };
+  const RE2::Anchor anchors[] = {RE2::UNANCHORED, RE2::ANCHOR_START,
+                                 RE2::ANCHOR_BOTH};
+  for (bool valid_utf8 : {false, true}) {
+    RE2::Options options;
+    options.set_valid_utf8(valid_utf8);
+    for (const char* pattern : patterns) {
+      RE2 fast(pattern, options);
+      RE2 general(std::string("(") + pattern + ")", options);
+      ASSERT_TRUE(fast.ok());
+      ASSERT_TRUE(general.ok());
+      for (const char* text : texts) {
+        absl::string_view s(text);
+        for (size_t start = 0; start <= s.size(); start++) {
+          for (size_t end = start; end <= s.size(); end++) {
+            for (RE2::Anchor anchor : anchors) {
+              absl::string_view m1, m2[2];
+              const bool r1 = fast.Match(s, start, end, anchor, &m1, 1);
+              const bool r2 = general.Match(s, start, end, anchor, m2, 2);
+              ASSERT_EQ(r1, r2) << pattern << " on " << absl::CEscape(s)
+                                << " [" << start << ", " << end << ")";
+              if (r1) {
+                ASSERT_EQ(m1.data(), m2[0].data()) << pattern;
+                ASSERT_EQ(m1.size(), m2[0].size()) << pattern;
+              }
+              ASSERT_EQ(fast.Match(s, start, end, anchor, NULL, 0), r2);
+            }
+          }
+        }
+      }
     }
   }
 }
