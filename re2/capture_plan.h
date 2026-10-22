@@ -53,6 +53,7 @@ class CapturePlan {
   bool AddRun(Regexp* sub, bool plus, bool bytewise);
   void AddLiteral(Op op, const std::string& bytes);
   bool RunsStopOnce() const;
+  bool StartsWith(const Step& step, const char* p, const char* end) const;
   bool MatchFrom(size_t i, const char* p, const char* end, State* state,
                  const char** match_end) const;
 

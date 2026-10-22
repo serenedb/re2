@@ -166,12 +166,32 @@ CapturePlan* CapturePlan::Make(Regexp* re, bool bytewise) {
   if (!plan->Add(re, bytewise) || plan->steps_.empty() ||
       !plan->RunsStopOnce())
     return NULL;
-  for (const Step& step : plan->steps_) {
-    if ((step.op == Op::kLiteral || step.op == Op::kOptional) &&
-        step.size == 0)
+  for (Step& step : plan->steps_) {
+    if (step.op != Op::kLiteral && step.op != Op::kOptional)
+      continue;
+    if (step.size == 0)
       return NULL;
+    if (step.size <= 8) {
+      const unsigned char ones[8] = {0xFF, 0xFF, 0xFF, 0xFF,
+                                     0xFF, 0xFF, 0xFF, 0xFF};
+      memcpy(&step.bits[0], plan->bytes_.data() + step.offset, step.size);
+      memcpy(&step.bits[1], ones, step.size);
+    }
   }
   return plan.release();
+}
+
+bool CapturePlan::StartsWith(const Step& step, const char* p,
+                             const char* end) const {
+  const size_t avail = static_cast<size_t>(end - p);
+  if (avail < step.size)
+    return false;
+  if (step.size <= 8 && avail >= 8) {
+    uint64_t word;
+    memcpy(&word, p, sizeof word);
+    return (word & step.bits[1]) == step.bits[0];
+  }
+  return memcmp(p, bytes_.data() + step.offset, step.size) == 0;
 }
 
 bool CapturePlan::MatchFrom(size_t i, const char* p, const char* end,
@@ -180,14 +200,12 @@ bool CapturePlan::MatchFrom(size_t i, const char* p, const char* end,
     const Step& step = steps_[i];
     switch (step.op) {
       case Op::kLiteral:
-        if (static_cast<size_t>(end - p) < step.size ||
-            memcmp(p, bytes_.data() + step.offset, step.size) != 0)
+        if (!StartsWith(step, p, end))
           return false;
         p += step.size;
         break;
       case Op::kOptional:
-        if (static_cast<size_t>(end - p) >= step.size &&
-            memcmp(p, bytes_.data() + step.offset, step.size) == 0) {
+        if (StartsWith(step, p, end)) {
           State saved = *state;
           if (MatchFrom(i + 1, p + step.size, end, state, match_end))
             return true;
