@@ -446,6 +446,41 @@ static size_t TailSpan(const char* p, size_t n, int tail) {
   return static_cast<size_t>(s - reinterpret_cast<const uint8_t*>(p));
 }
 
+static void AddRunByte(uint64_t* bits, int b) {
+  bits[b >> 6] |= uint64_t{1} << (b & 63);
+}
+
+static bool ClassRunBits(Regexp* re, uint64_t* bits) {
+  if (re->op() != kRegexpPlus || (re->parse_flags() & Regexp::NonGreedy))
+    return false;
+  Regexp* sub = re->sub()[0];
+  if (sub->op() == kRegexpLiteral) {
+    const Rune r = sub->rune();
+    if (r >= 0x80)
+      return false;
+    AddRunByte(bits, r);
+    if (sub->parse_flags() & Regexp::FoldCase) {
+      const Rune lower = r | 0x20;
+      if (lower == 'k' || lower == 's')
+        return false;
+      if (lower >= 'a' && lower <= 'z') {
+        AddRunByte(bits, lower);
+        AddRunByte(bits, lower - 'a' + 'A');
+      }
+    }
+    return true;
+  }
+  if (sub->op() != kRegexpCharClass || sub->cc()->empty())
+    return false;
+  for (CharClass::iterator i = sub->cc()->begin(); i != sub->cc()->end(); ++i) {
+    if (i->hi >= 0x80)
+      return false;
+    for (Rune r = i->lo; r <= i->hi; r++)
+      AddRunByte(bits, r);
+  }
+  return true;
+}
+
 void RE2::Init(absl::string_view pattern, const Options& options) {
   static absl::once_flag empty_once;
   absl::call_once(empty_once, []() {
@@ -467,6 +502,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   has_required_set_ = false;
   has_full_match_set_ = false;
   plan_whole_ = false;
+  class_run_ = false;
   plan_min_size_ = 0;
   prefix_.clear();
   required_literal_.clear();
@@ -566,6 +602,9 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     SplitTail(suffix_regexp_, &tail_);
   if (tail_ != 0 && options_.valid_utf8())
     tail_ |= kTailBytes;
+  uint64_t run_bits[4] = {};
+  if (!options_.never_nl() && ClassRunBits(entire_regexp_, run_bits))
+    class_run_ = class_run_finder_.Build(run_bits);
 }
 
 // Returns rprog_, computing it if needed.
@@ -1110,6 +1149,26 @@ bool RE2::MatchImpl(absl::string_view text,
       (re_anchor != UNANCHORED || !prefix_.empty()) &&
       (re_anchor == ANCHOR_BOTH || prog_->anchor_end()))
     return MatchPlan(subtext, startpos, submatch, nsubmatch);
+
+  if (class_run_) {
+    const char* p = subtext.data();
+    const char* end = p + subtext.size();
+    if (re_anchor == UNANCHORED) {
+      p = class_run_finder_.Find(p, end);
+      if (p == NULL)
+        return false;
+    } else if (class_run_finder_.Skip(p, end) == p) {
+      return false;
+    }
+    const char* run_end = class_run_finder_.Skip(p, end);
+    if (re_anchor == ANCHOR_BOTH && run_end != end)
+      return false;
+    if (nsubmatch > 0)
+      submatch[0] = absl::string_view(p, static_cast<size_t>(run_end - p));
+    for (int i = 1; i < nsubmatch; i++)
+      submatch[i] = absl::string_view();
+    return true;
+  }
 
   // Check for the required prefix, if any.
   size_t prefixlen = 0;

@@ -121,6 +121,24 @@ class ByteSetFinder {
     return NULL;
   }
 
+  const char* Skip(const char* p, const char* end) const {
+    if (end - p >= 32) {
+      const char* tail = end - 32;
+      for (; p < tail; p += 32) {
+        const uint32_t mask = ~Classify32(p);
+        if (mask != 0)
+          return p + absl::countr_zero(mask);
+      }
+      const uint32_t mask =
+          ~Classify32(tail) & (~uint32_t{0} << static_cast<uint32_t>(p - tail));
+      return mask != 0 ? tail + absl::countr_zero(mask) : end;
+    }
+    for (; p != end; p++)
+      if (!Contains(bits_, *p))
+        return p;
+    return end;
+  }
+
  private:
   static bool Contains(const uint64_t* bits, char c) {
     const uint8_t b = static_cast<uint8_t>(c);

@@ -220,6 +220,7 @@
 
 #include "absl/base/call_once.h"
 #include "absl/strings/string_view.h"
+#include "re2/byte_set_finder.h"
 #include "re2/literal_finder.h"
 #include "re2/stringpiece.h"
 
@@ -823,6 +824,8 @@ class RE2 {
   bool has_required_set_ : 1;
   bool has_full_match_set_ : 1;
   bool plan_whole_ : 1;
+  bool class_run_ : 1;            // regexp is a greedy run of ASCII bytes
+  ByteSetFinder class_run_finder_;
   size_t plan_min_size_;
   std::string prefix_;            // required prefix (before suffix_regexp_)
   std::string required_literal_;
