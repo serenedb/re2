@@ -113,6 +113,7 @@ list(JOIN REQUIRES " " REQUIRES)
 set(RE2_SOURCES
     re2/bitmap256.cc
     re2/bitstate.cc
+    re2/capture_plan.cc
     re2/compile.cc
     re2/dfa.cc
     re2/filtered_re2.cc
@@ -202,6 +203,7 @@ if(RE2_BUILD_TESTING OR RE2_TEST OR RE2_BENCHMARK)
     endif()
 
     set(TEST_TARGETS
+        capture_plan_test
         charclass_test
         compile_test
         filtered_re2_test

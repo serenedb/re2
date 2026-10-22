@@ -34,6 +34,7 @@
 #include "absl/strings/string_view.h"
 #include "re2/prog.h"
 #include "re2/regexp.h"
+#include "re2/capture_plan.h"
 #include "re2/segment_plan.h"
 #include "re2/sparse_array.h"
 #include "util/strutil.h"
@@ -514,6 +515,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
 
   rprog_ = NULL;
   hprog_ = NULL;
+  hplan_ = NULL;
   named_groups_ = NULL;
   group_names_ = NULL;
 
@@ -648,6 +650,7 @@ re2::Prog* RE2::HeadProg() const {
       re2::Regexp* head =
           Regexp::Concat(suffix->sub(), n, suffix->parse_flags());
       re->hprog_ = head->CompileToProg(re->options_.max_mem() * 2 / 3);
+      re->hplan_ = CapturePlan::Make(head, re->options_.valid_utf8());
       head->Decref();
     }
     suffix->Decref();
@@ -667,6 +670,7 @@ RE2::~RE2() {
     delete named_groups_;
   delete rprog_;
   delete hprog_;
+  delete hplan_;
   delete prog_;
   delete required_set_;
   delete full_match_set_;
@@ -1046,7 +1050,9 @@ bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
   if (prog == NULL)
     return false;
   const Prog::Anchor anchor = anchored ? Prog::kAnchored : Prog::kUnanchored;
-  if (anchored && ncap <= Prog::kMaxOnePassCapture && prog->IsOnePass())
+  if (anchored && hplan_ != NULL && ncap <= hplan_->max_submatch())
+    *matched = hplan_->Match(subtext, submatch, ncap);
+  else if (anchored && ncap <= Prog::kMaxOnePassCapture && prog->IsOnePass())
     *matched = prog->SearchOnePass(subtext, text, anchor, Prog::kFirstMatch,
                                    submatch, ncap);
   else if (prog->CanBitState() &&

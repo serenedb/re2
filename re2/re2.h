@@ -229,6 +229,7 @@
 #endif
 
 namespace re2 {
+class CapturePlan;
 class Prog;
 class Regexp;
 class SegmentPlan;
@@ -837,6 +838,7 @@ class RE2 {
   // Reverse Prog for DFA execution only
   mutable re2::Prog* rprog_;
   mutable re2::Prog* hprog_;
+  mutable re2::CapturePlan* hplan_;
   // Map from capture names to indices
   mutable const std::map<std::string, int>* named_groups_;
   // Map from capture indices to names
