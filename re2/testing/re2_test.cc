@@ -1760,6 +1760,46 @@ TEST(RE2, ValidUTF8KeepsWholeTextMatches) {
   }
 }
 
+TEST(RE2, CapturePlansKeepCharactersWhole) {
+  const char* patterns[] = {"[^a]+", "[^a]+.*", "x?[^/]+", "x?[^/]+.*"};
+  const char* texts[] = {"\xc3\xa9" "12\xc3\xa9" "3", "\xe2\x82\xac/\xc3\xa9"};
+  const RE2::Anchor anchors[] = {RE2::UNANCHORED, RE2::ANCHOR_START,
+                                 RE2::ANCHOR_BOTH};
+  RE2::Options options;
+  options.set_valid_utf8(true);
+  for (const char* pattern : patterns) {
+    RE2 plain(pattern, options);
+    std::string captured(pattern);
+    const size_t tail = captured.find(".*");
+    captured = "(" + captured.substr(0, tail) + ")" +
+               (tail == std::string::npos ? "" : ".*");
+    RE2 capturing(captured, options);
+    ASSERT_TRUE(plain.ok());
+    ASSERT_TRUE(capturing.ok());
+    for (const char* text : texts) {
+      absl::string_view s(text);
+      for (size_t start = 0; start <= s.size(); start++) {
+        for (size_t end = start; end <= s.size(); end++) {
+          for (RE2::Anchor anchor : anchors) {
+            absl::string_view m1, m2[2];
+            const bool r1 = plain.Match(s, start, end, anchor, &m1, 1);
+            const bool r2 = capturing.Match(s, start, end, anchor, m2, 2);
+            ASSERT_EQ(r1, r2) << captured << " on " << absl::CEscape(s)
+                              << " [" << start << ", " << end << ")";
+            if (r1) {
+              ASSERT_EQ(m1.data(), m2[0].data()) << captured;
+              ASSERT_EQ(m1.size(), m2[0].size())
+                  << captured << " on " << absl::CEscape(s) << " [" << start
+                  << ", " << end << ") anchor " << anchor << " m1 "
+                  << absl::CEscape(m1) << " m2 " << absl::CEscape(m2[0]);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(RE2, ClassRunMatchesGeneralPath) {
   const char* patterns[] = {
       "[0-9]+", "a+", "(?i)b+", "[a-zA-Z_]+", "\\w+", "[\\n ]+",

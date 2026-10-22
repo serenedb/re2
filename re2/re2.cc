@@ -602,8 +602,6 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
     plan_min_size_ = segment_plan_->min_size();
   if (!longest_match_ && num_captures_ > 0)
     SplitTail(suffix_regexp_, &tail_);
-  if (tail_ != 0 && options_.valid_utf8())
-    tail_ |= kTailBytes;
   uint64_t run_bits[4] = {};
   if (!options_.never_nl() && ClassRunBits(entire_regexp_, run_bits))
     class_run_ = class_run_finder_.Build(run_bits);
@@ -1036,10 +1034,22 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool RE2::MatchPlan(
   return true;
 }
 
+static bool CutsCharacter(absl::string_view text, absl::string_view subtext) {
+  const auto continuation = [](const char* p) {
+    return (static_cast<unsigned char>(*p) & 0xC0) == 0x80;
+  };
+  return (BeginPtr(subtext) > BeginPtr(text) &&
+          BeginPtr(subtext) < EndPtr(text) && continuation(BeginPtr(subtext))) ||
+         (EndPtr(subtext) < EndPtr(text) && continuation(EndPtr(subtext)));
+}
+
 bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
                     bool anchored, bool to_end, absl::string_view* submatch,
                     int ncap, bool* matched) const {
   int tail = tail_;
+  const bool cut = options_.valid_utf8() && CutsCharacter(text, subtext);
+  if (options_.valid_utf8() && !cut)
+    tail |= kTailBytes;
   if (to_end && !(tail & kTailNewline)) {
     if (!subtext.empty() &&
         memchr(subtext.data(), '\n', subtext.size()) != NULL)
@@ -1050,7 +1060,7 @@ bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
   if (prog == NULL)
     return false;
   const Prog::Anchor anchor = anchored ? Prog::kAnchored : Prog::kUnanchored;
-  if (anchored && hplan_ != NULL && ncap <= hplan_->max_submatch())
+  if (anchored && hplan_ != NULL && ncap <= hplan_->max_submatch() && !cut)
     *matched = hplan_->Match(subtext, submatch, ncap);
   else if (anchored && ncap <= Prog::kMaxOnePassCapture && prog->IsOnePass())
     *matched = prog->SearchOnePass(subtext, text, anchor, Prog::kFirstMatch,
