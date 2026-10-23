@@ -425,7 +425,7 @@ bool SegmentPlan::Match(absl::string_view text) const {
       break;
     }
   }
-  if (!dot_nl_ && memchr(data, '\n', size) != NULL)
+  if (!dot_nl_ && text.find('\n') != absl::string_view::npos)
     return false;
   return Units(text);
 }
@@ -450,7 +450,7 @@ bool SegmentPlan::MatchGeneral(absl::string_view text) const {
         return false;
     }
   }
-  if (!dot_nl_ && memchr(text.data(), '\n', text.size()) != NULL)
+  if (!dot_nl_ && text.find('\n') != absl::string_view::npos)
     return false;
   return !any_string_ || Units(text);
 }
