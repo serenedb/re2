@@ -47,6 +47,12 @@ const Pattern kPatterns[] = {
     {"(?m)^(\\w*):", false},
     {"(\\d+)$", false},
     {"\\B(b+)", false},
+    {"^https?://(?:www\\.)?([^/]+)/.*$", true},
+    {"(.*)\xc3\xa9(.*)", true},
+    {"(.+)\xe2\x82\xac", true},
+    {"([^/]*)\xc3\xa9", true},
+    {"(.{2})\xe2\x82\xac", true},
+    {"(?s)(.*)/(.*)", true},
 };
 
 const char* kUnits[] = {"a", "b", "c", "d", "s", "w", "x", "y", "z", ":",

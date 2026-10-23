@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <algorithm>
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -911,7 +913,11 @@ Frag Compiler::PostVisit(Regexp* re, Frag, Frag, Frag* child_frags,
 
     case kRegexpAnyChar:
       BeginRange();
-      AddRuneRange(0, Runemax, false);
+      if ((re->parse_flags() & Regexp::ValidUTF8Run) &&
+          encoding_ == kEncodingUTF8)
+        AddRuneRangeLatin1(0x00, 0xFF, false);
+      else
+        AddRuneRange(0, Runemax, false);
       return EndRange();
 
     case kRegexpAnyByte:
@@ -933,11 +939,17 @@ Frag Compiler::PostVisit(Regexp* re, Frag, Frag, Frag* child_frags,
       // This reduces the size of a program for
       // (?i)abc from 3 insts per letter to 1 per letter.
       bool foldascii = cc->FoldsASCII();
+      const bool run = (re->parse_flags() & Regexp::ValidUTF8Run) &&
+                       encoding_ == kEncodingUTF8;
 
       // Character class is just a big OR of the different
       // character ranges in the class.
       BeginRange();
+      if (run)
+        AddRuneRangeLatin1(0x80, 0xFF, false);
       for (CharClass::iterator i = cc->begin(); i != cc->end(); ++i) {
+        if (run && i->lo > 0x7F)
+          break;
         // ASCII case-folding optimization (see above).
         if (foldascii && 'A' <= i->lo && i->hi <= 'Z')
           continue;
@@ -949,7 +961,7 @@ Frag Compiler::PostVisit(Regexp* re, Frag, Frag, Frag* child_frags,
             ('Z' < i->lo && i->hi < 'a'))
           fold = false;
 
-        AddRuneRange(i->lo, i->hi, fold);
+        AddRuneRange(i->lo, run ? std::min<Rune>(i->hi, 0x7F) : i->hi, fold);
       }
       return EndRange();
     }
