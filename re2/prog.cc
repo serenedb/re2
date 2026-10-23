@@ -128,6 +128,7 @@ Prog::Prog()
 }
 
 Prog::~Prog() {
+  DeleteTDFA();
   DeleteDFA(dfa_longest_);
   DeleteDFA(dfa_first_);
   DeleteDFA(owned_longest_);

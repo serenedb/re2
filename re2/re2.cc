@@ -471,6 +471,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   // and that is harder to do if the DFA has already
   // been built.
   is_one_pass_ = prog_->IsOnePass();
+  prog_->ReserveTDFA();
 
   if (!prog_->anchor_start() && !prog_->anchor_end() &&
       !prog_->literal_prefix_accel()) {
@@ -1032,6 +1033,7 @@ bool RE2::MatchImpl(absl::string_view text,
 #endif
   bool dfa_failed = false;
   bool skipped_test = false;
+  bool tdfa_done = false;
   switch (re_anchor) {
     default:
       ABSL_LOG(DFATAL) << "Unexpected re_anchor value: " << re_anchor;
@@ -1076,6 +1078,17 @@ bool RE2::MatchImpl(absl::string_view text,
           required_set_->Find(subtext.data(),
                               subtext.data() + subtext.size()) == NULL)
         return false;
+
+      if (ncap > 1) {
+        int found = prog_->SearchTDFA(subtext, text, Prog::kUnanchored, kind,
+                                      submatch, ncap);
+        if (found == 0)
+          return false;
+        if (found == 1) {
+          tdfa_done = true;
+          break;
+        }
+      }
 
       if (!prog_->SearchDFA(subtext, text, anchor, kind,
                             matchp, &dfa_failed, NULL)) {
@@ -1164,7 +1177,8 @@ bool RE2::MatchImpl(absl::string_view text,
       break;
   }
 
-  if (!skipped_test && ncap <= 1) {
+  if (tdfa_done) {
+  } else if (!skipped_test && ncap <= 1) {
     // We know exactly where it matches.  That's enough.
     if (ncap == 1)
       submatch[0] = match;
@@ -1187,6 +1201,14 @@ bool RE2::MatchImpl(absl::string_view text,
       if (!prog_->SearchOnePass(subtext1, text, anchor, kind, submatch, ncap)) {
         if (!skipped_test && options_.log_errors())
           ABSL_LOG(ERROR) << "SearchOnePass inconsistency";
+        return false;
+      }
+    } else if (int found = prog_->SearchTDFA(subtext1, text, anchor, kind,
+                                             submatch, ncap);
+               found >= 0) {
+      if (found == 0) {
+        if (!skipped_test && options_.log_errors())
+          ABSL_LOG(ERROR) << "SearchTDFA inconsistency";
         return false;
       }
     } else if (can_bit_state && subtext1.size() <= bit_state_text_max_size) {

@@ -119,6 +119,7 @@ set(RE2_SOURCES
     re2/mimics_pcre.cc
     re2/nfa.cc
     re2/onepass.cc
+    re2/tdfa.cc
     re2/parse.cc
     re2/perl_groups.cc
     re2/prefilter.cc
@@ -216,6 +217,7 @@ if(RE2_BUILD_TESTING OR RE2_TEST OR RE2_BENCHMARK)
         set_test
         simplify_test
         string_generator_test
+        tdfa_test
 
         dfa_test
         exhaustive1_test

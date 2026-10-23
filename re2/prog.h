@@ -11,8 +11,10 @@
 
 #include <stdint.h>
 
+#include <atomic>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -57,6 +59,7 @@ enum EmptyOp {
 
 template <bool kThreadSafe>
 class DFA;
+class TDFA;
 class Regexp;
 
 // Compiled form of regexp program.
@@ -381,6 +384,11 @@ class Prog {
 
   static const int kMaxOnePassCapture = 5;  // $0 through $4
 
+  void ReserveTDFA();
+  int SearchTDFA(absl::string_view text, absl::string_view context,
+                 Anchor anchor, MatchKind kind, absl::string_view* match,
+                 int nmatch);
+
   // Backtracking search: the gold standard against which the other
   // implementations are checked.  FOR TESTING ONLY.
   // It allocates a ton of memory to avoid running forever.
@@ -504,6 +512,12 @@ class Prog {
 
   absl::once_flag dfa_first_once_;
   absl::once_flag dfa_longest_once_;
+
+  void DeleteTDFA();
+  absl::once_flag tdfa_once_;
+  std::atomic<int64_t> tdfa_budget_{-1};
+  std::unique_ptr<std::atomic<TDFA*>[]> tdfa_;
+  int tdfa_count_ = 0;
 
   Prog(const Prog&) = delete;
   Prog& operator=(const Prog&) = delete;
