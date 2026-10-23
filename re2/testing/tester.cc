@@ -48,6 +48,7 @@ const char* engine_names[kEngineMax] = {
   "OnePass",
   "BitState",
   "BitStateReused",
+  "TDFA",
   "RE2",
   "RE2a",
   "RE2b",
@@ -222,6 +223,8 @@ TestInstance::TestInstance(absl::string_view regexp_str, Prog::MatchKind kind,
     error_ = true;
     return;
   }
+  prog_->IsOnePass();
+  prog_->ReserveTDFA();
   if (absl::GetFlag(FLAGS_dump_prog)) {
     ABSL_LOG(INFO) << "Prog for "
                    << " regexp "
@@ -406,6 +409,22 @@ void TestInstance::RunSearch(Engine type, absl::string_view orig_text,
                                       result->submatch, nsubmatch);
       result->have_submatch = true;
       break;
+
+    case kEngineTDFA: {
+      if (prog_ == NULL) {
+        result->skipped = true;
+        break;
+      }
+      int found = prog_->SearchTDFA(text, context, anchor, kind_,
+                                    result->submatch, nsubmatch);
+      if (found < 0) {
+        result->skipped = true;
+        break;
+      }
+      result->matched = found == 1;
+      result->have_submatch = true;
+      break;
+    }
 
     case kEngineBitState:
       if (prog_ == NULL ||

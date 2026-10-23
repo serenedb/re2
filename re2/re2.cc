@@ -34,7 +34,6 @@
 #include "absl/strings/string_view.h"
 #include "re2/prog.h"
 #include "re2/regexp.h"
-#include "re2/capture_plan.h"
 #include "re2/segment_plan.h"
 #include "re2/sparse_array.h"
 #include "util/strutil.h"
@@ -353,100 +352,6 @@ static bool RequiredLiteralSet(Regexp* re, std::vector<std::string>* best) {
   return best_size >= 2 && !best_at_start;
 }
 
-enum {
-  kTailFound = 1 << 0,
-  kTailEnd = 1 << 1,
-  kTailLazy = 1 << 2,
-  kTailNewline = 1 << 3,
-  kTailBytes = 1 << 4,
-};
-
-static int SplitTail(Regexp* re, int* tail) {
-  *tail = 0;
-  if (re->op() != kRegexpConcat)
-    return 0;
-  Regexp** subs = re->sub();
-  int n = re->nsub();
-  int flags = kTailFound;
-  if (subs[n - 1]->op() == kRegexpEndText) {
-    flags |= kTailEnd;
-    n--;
-  }
-  if (n < 2 || subs[n - 1]->op() != kRegexpStar)
-    return 0;
-  Regexp* star = subs[n - 1];
-  Regexp* dot = star->sub()[0];
-  const bool latin1 = (dot->parse_flags() & Regexp::Latin1) != 0;
-  switch (dot->op()) {
-    case kRegexpAnyByte:
-      flags |= kTailBytes | kTailNewline;
-      break;
-    case kRegexpAnyChar:
-      flags |= kTailNewline;
-      break;
-    case kRegexpCharClass: {
-      const int all = latin1 ? 0x100 : Runemax + 1;
-      if (dot->cc()->size() == all)
-        flags |= kTailNewline;
-      else if (dot->cc()->size() != all - 1 || dot->cc()->Contains('\n'))
-        return 0;
-      break;
-    }
-    default:
-      return 0;
-  }
-  if (latin1)
-    flags |= kTailBytes;
-  if (star->parse_flags() & Regexp::NonGreedy)
-    flags |= kTailLazy;
-  *tail = flags;
-  return n - 1;
-}
-
-static size_t TailSpan(const char* p, size_t n, int tail) {
-  if (tail & kTailBytes) {
-    if ((tail & kTailNewline) || n == 0)
-      return n;
-    const void* nl = memchr(p, '\n', n);
-    return nl == NULL ? n
-                      : static_cast<size_t>(static_cast<const char*>(nl) - p);
-  }
-  const bool newline = (tail & kTailNewline) != 0;
-  const uint64_t ones = 0x0101010101010101ULL;
-  const uint64_t highs = 0x8080808080808080ULL;
-  const uint8_t* s = reinterpret_cast<const uint8_t*>(p);
-  const uint8_t* end = s + n;
-  while (s < end) {
-    if (end - s >= 8) {
-      uint64_t w;
-      memcpy(&w, s, sizeof w);
-      const uint64_t x = w ^ (ones * '\n');
-      if ((w & highs) == 0 && (newline || ((x - ones) & ~x & highs) == 0)) {
-        s += 8;
-        continue;
-      }
-    }
-    const uint8_t c = *s;
-    if (c < 0x80) {
-      if (c == '\n' && !newline)
-        break;
-      s++;
-      continue;
-    }
-    const int len =
-        c < 0xC2 ? 0 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : c < 0xF5 ? 4 : 0;
-    if (len == 0 || end - s < len)
-      break;
-    int i = 1;
-    while (i < len && (s[i] & 0xC0) == 0x80)
-      i++;
-    if (i < len)
-      break;
-    s += len;
-  }
-  return static_cast<size_t>(s - reinterpret_cast<const uint8_t*>(p));
-}
-
 static void AddRunByte(uint64_t* bits, int b) {
   bits[b >> 6] |= uint64_t{1} << (b & 63);
 }
@@ -511,12 +416,8 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   full_match_set_ = NULL;
   segment_plan_ = NULL;
   prog_ = NULL;
-  tail_ = 0;
 
   rprog_ = NULL;
-  hprog_ = NULL;
-  hplan_ = NULL;
-  plan_ = NULL;
   named_groups_ = NULL;
   group_names_ = NULL;
 
@@ -570,6 +471,7 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   // and that is harder to do if the DFA has already
   // been built.
   is_one_pass_ = prog_->IsOnePass();
+  prog_->ReserveTDFA();
 
   if (!prog_->anchor_start() && !prog_->anchor_end() &&
       !prog_->literal_prefix_accel()) {
@@ -601,10 +503,6 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
                 (prog_->anchor_start() || !prefix_.empty());
   if (plan_whole_)
     plan_min_size_ = segment_plan_->min_size();
-  if (!longest_match_ && num_captures_ > 0)
-    SplitTail(suffix_regexp_, &tail_);
-  if (!longest_match_ && num_captures_ > 0 && tail_ == 0)
-    plan_ = CapturePlan::Make(suffix_regexp_, options_.valid_utf8());
   uint64_t run_bits[4] = {};
   if (!options_.never_nl() && ClassRunBits(entire_regexp_, run_bits))
     class_run_ = class_run_finder_.Build(run_bits);
@@ -631,48 +529,12 @@ re2::Prog* RE2::ReverseProg() const {
   return rprog_;
 }
 
-re2::Prog* RE2::HeadProg() const {
-  absl::call_once(hprog_once_, [](const RE2* re) {
-    re2::Regexp* entire = Regexp::Parse(
-        *re->pattern_,
-        static_cast<Regexp::ParseFlags>(re->options_.ParseFlags()), NULL);
-    if (entire == NULL)
-      return;
-    std::string prefix;
-    bool foldcase;
-    re2::Regexp* suffix;
-    if (!entire->RequiredPrefix(&prefix, &foldcase, &suffix))
-      suffix = entire->Incref();
-    int tail;
-    const int n = SplitTail(suffix, &tail);
-    if (n > 0) {
-      for (int i = 0; i < n; i++)
-        suffix->sub()[i]->Incref();
-      re2::Regexp* head =
-          Regexp::Concat(suffix->sub(), n, suffix->parse_flags());
-      re->hprog_ = head->CompileToProg(re->options_.max_mem() * 2 / 3);
-      re->hplan_ = CapturePlan::Make(head, re->options_.valid_utf8());
-      head->Decref();
-    }
-    suffix->Decref();
-    entire->Decref();
-    if (re->hprog_ == NULL)
-      return;
-    re->hprog_->set_thread_safe(re->options_.thread_safe());
-    re->hprog_->IsOnePass();
-  }, this);
-  return hprog_;
-}
-
 RE2::~RE2() {
   if (group_names_ != empty_group_names())
     delete group_names_;
   if (named_groups_ != empty_named_groups())
     delete named_groups_;
   delete rprog_;
-  delete hprog_;
-  delete hplan_;
-  delete plan_;
   delete prog_;
   delete required_set_;
   delete full_match_set_;
@@ -1038,59 +900,6 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool RE2::MatchPlan(
   return true;
 }
 
-static bool CutsCharacter(absl::string_view text, absl::string_view subtext) {
-  const auto continuation = [](const char* p) {
-    return (static_cast<unsigned char>(*p) & 0xC0) == 0x80;
-  };
-  return (BeginPtr(subtext) > BeginPtr(text) &&
-          BeginPtr(subtext) < EndPtr(text) && continuation(BeginPtr(subtext))) ||
-         (EndPtr(subtext) < EndPtr(text) && continuation(EndPtr(subtext)));
-}
-
-bool RE2::MatchHead(absl::string_view text, absl::string_view subtext,
-                    bool anchored, bool to_end, absl::string_view* submatch,
-                    int ncap, bool* matched) const {
-  int tail = tail_;
-  const bool cut = options_.valid_utf8() && CutsCharacter(text, subtext);
-  if (options_.valid_utf8() && !cut)
-    tail |= kTailBytes;
-  if (to_end && !(tail & kTailNewline)) {
-    if (!subtext.empty() &&
-        memchr(subtext.data(), '\n', subtext.size()) != NULL)
-      return false;
-    tail |= kTailNewline;
-  }
-  Prog* prog = HeadProg();
-  if (prog == NULL)
-    return false;
-  const Prog::Anchor anchor = anchored ? Prog::kAnchored : Prog::kUnanchored;
-  if (anchored && hplan_ != NULL && ncap <= hplan_->max_submatch() && !cut)
-    *matched = hplan_->Match(subtext, submatch, ncap);
-  else if (anchored && ncap <= Prog::kMaxOnePassCapture && prog->IsOnePass())
-    *matched = prog->SearchOnePass(subtext, text, anchor, Prog::kFirstMatch,
-                                   submatch, ncap);
-  else if (prog->CanBitState() &&
-           subtext.size() <= prog->bit_state_text_max_size())
-    *matched = prog->SearchBitState(subtext, text, anchor, Prog::kFirstMatch,
-                                    submatch, ncap);
-  else
-    *matched = prog->SearchNFA(subtext, text, anchor, Prog::kFirstMatch,
-                               submatch, ncap);
-  if (!*matched)
-    return true;
-  const char* head_end = EndPtr(submatch[0]);
-  const size_t rest = static_cast<size_t>(EndPtr(subtext) - head_end);
-  size_t span = 0;
-  if (to_end || !(tail & kTailLazy)) {
-    span = TailSpan(head_end, rest, tail);
-    if (to_end && span != rest)
-      return false;
-  }
-  submatch[0] = absl::string_view(BeginPtr(submatch[0]),
-                                  submatch[0].size() + span);
-  return true;
-}
-
 bool RE2::Match(absl::string_view text,
                 size_t startpos,
                 size_t endpos,
@@ -1224,6 +1033,7 @@ bool RE2::MatchImpl(absl::string_view text,
 #endif
   bool dfa_failed = false;
   bool skipped_test = false;
+  bool tdfa_done = false;
   switch (re_anchor) {
     default:
       ABSL_LOG(DFATAL) << "Unexpected re_anchor value: " << re_anchor;
@@ -1271,6 +1081,17 @@ bool RE2::MatchImpl(absl::string_view text,
       if (prog_->can_prefix_accel() &&
           prog_->PrefixAccel(subtext.data(), subtext.size()) == NULL)
         return false;
+
+      if (ncap > 1) {
+        int found = prog_->SearchTDFA(subtext, text, Prog::kUnanchored, kind,
+                                      submatch, ncap);
+        if (found == 0)
+          return false;
+        if (found == 1) {
+          tdfa_done = true;
+          break;
+        }
+      }
 
       if (!prog_->SearchDFA(subtext, text, anchor, kind,
                             matchp, &dfa_failed, NULL)) {
@@ -1359,7 +1180,8 @@ bool RE2::MatchImpl(absl::string_view text,
       break;
   }
 
-  if (!skipped_test && ncap <= 1) {
+  if (tdfa_done) {
+  } else if (!skipped_test && ncap <= 1) {
     // We know exactly where it matches.  That's enough.
     if (ncap == 1)
       submatch[0] = match;
@@ -1378,23 +1200,18 @@ bool RE2::MatchImpl(absl::string_view text,
       kind = Prog::kFullMatch;
     }
 
-    bool matched = false;
-    if (tail_ != 0 && ncap > 1 &&
-        MatchHead(text, subtext1, anchor == Prog::kAnchored,
-                  kind == Prog::kFullMatch || (tail_ & kTailEnd), submatch,
-                  ncap, &matched)) {
-      if (!matched)
-        return false;
-    } else if (plan_ != NULL && anchor != Prog::kUnanchored &&
-               ncap <= plan_->max_submatch() &&
-               !(options_.valid_utf8() && CutsCharacter(text, subtext1)) &&
-               plan_->Match(subtext1, submatch, ncap) &&
-               (kind != Prog::kFullMatch ||
-                EndPtr(submatch[0]) == EndPtr(subtext1))) {
-    } else if (can_one_pass && anchor != Prog::kUnanchored) {
+    if (can_one_pass && anchor != Prog::kUnanchored) {
       if (!prog_->SearchOnePass(subtext1, text, anchor, kind, submatch, ncap)) {
         if (!skipped_test && options_.log_errors())
           ABSL_LOG(ERROR) << "SearchOnePass inconsistency";
+        return false;
+      }
+    } else if (int found = prog_->SearchTDFA(subtext1, text, anchor, kind,
+                                             submatch, ncap);
+               found >= 0) {
+      if (found == 0) {
+        if (!skipped_test && options_.log_errors())
+          ABSL_LOG(ERROR) << "SearchTDFA inconsistency";
         return false;
       }
     } else if (can_bit_state && subtext1.size() <= bit_state_text_max_size) {
