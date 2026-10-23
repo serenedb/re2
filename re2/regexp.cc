@@ -338,6 +338,81 @@ Regexp* Regexp::LiteralString(Rune* runes, int nrunes, ParseFlags flags) {
   return re;
 }
 
+namespace {
+
+bool HasAnyByte(Regexp* re) {
+  if (re->op() == kRegexpAnyByte)
+    return true;
+  for (int i = 0; i < re->nsub(); i++) {
+    if (HasAnyByte(re->sub()[i]))
+      return true;
+  }
+  return false;
+}
+
+bool CoversNonAscii(CharClass* cc) {
+  Rune next = 0x80;
+  for (CharClass::iterator it = cc->begin(); it != cc->end(); ++it) {
+    if (it->hi < next)
+      continue;
+    if (it->lo > next)
+      return false;
+    next = it->hi + 1;
+  }
+  return next > Runemax;
+}
+
+}  // namespace
+
+Regexp* Regexp::BytewiseRuns() {
+  if ((parse_flags() & Latin1) || HasAnyByte(this))
+    return NULL;
+  return Bytewise();
+}
+
+Regexp* Regexp::Bytewise() {
+  switch (op_) {
+    case kRegexpStar:
+    case kRegexpPlus: {
+      Regexp* body = sub()[0];
+      const ParseFlags flags =
+          static_cast<ParseFlags>(body->parse_flags() | ValidUTF8Run);
+      Regexp* rebuilt;
+      if (body->op_ == kRegexpAnyChar) {
+        rebuilt = new Regexp(kRegexpAnyChar, flags);
+      } else if (body->op_ == kRegexpCharClass && CoversNonAscii(body->cc())) {
+        CharClassBuilder copy;
+        for (CharClass::iterator it = body->cc()->begin();
+             it != body->cc()->end(); ++it)
+          copy.AddRange(it->lo, it->hi);
+        rebuilt = NewCharClass(copy.GetCharClass(), flags);
+      } else {
+        rebuilt = body->Bytewise();
+      }
+      return StarPlusOrQuest(op(), rebuilt, parse_flags());
+    }
+    case kRegexpQuest:
+      return StarPlusOrQuest(op(), sub()[0]->Bytewise(), parse_flags());
+    case kRegexpRepeat:
+      return Repeat(sub()[0]->Bytewise(), parse_flags(), min(), max());
+    case kRegexpConcat:
+    case kRegexpAlternate: {
+      std::vector<Regexp*> subs(nsub_);
+      for (int i = 0; i < nsub_; i++)
+        subs[i] = sub()[i]->Bytewise();
+      return ConcatOrAlternate(op(), subs.data(), nsub_, parse_flags(), false);
+    }
+    case kRegexpCapture: {
+      Regexp* re = Capture(sub()[0]->Bytewise(), parse_flags(), cap());
+      if (name() != NULL)
+        re->name_ = new std::string(*name());
+      return re;
+    }
+    default:
+      return Incref();
+  }
+}
+
 Regexp* Regexp::NewCharClass(CharClass* cc, ParseFlags flags) {
   Regexp* re = new Regexp(kRegexpCharClass, flags);
   re->cc_ = cc;

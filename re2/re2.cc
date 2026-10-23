@@ -446,6 +446,12 @@ void RE2::Init(absl::string_view pattern, const Options& options) {
   else {
     suffix_regexp_ = entire_regexp_->Incref();
   }
+  if (options_.valid_utf8()) {
+    if (re2::Regexp* bytewise = suffix_regexp_->BytewiseRuns()) {
+      suffix_regexp_->Decref();
+      suffix_regexp_ = bytewise;
+    }
+  }
 
   // Two thirds of the memory goes to the forward Prog,
   // one third to the reverse prog, because the forward
