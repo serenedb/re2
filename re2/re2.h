@@ -229,7 +229,6 @@
 #endif
 
 namespace re2 {
-class CapturePlan;
 class Prog;
 class Regexp;
 class SegmentPlan;
@@ -796,13 +795,9 @@ class RE2 {
                int n) const;
 
   re2::Prog* ReverseProg() const;
-  re2::Prog* HeadProg() const;
 
   bool MatchPlan(absl::string_view subtext, size_t startpos,
                  absl::string_view* submatch, int nsubmatch) const;
-  bool MatchHead(absl::string_view text, absl::string_view subtext,
-                 bool anchored, bool to_end, absl::string_view* submatch,
-                 int ncap, bool* matched) const;
   bool MatchImpl(absl::string_view text, size_t startpos, size_t endpos,
                  Anchor re_anchor, absl::string_view* submatch,
                  int nsubmatch) const;
@@ -833,20 +828,15 @@ class RE2 {
   LiteralFinder required_finder_;
   re2::SegmentPlan* segment_plan_;
   re2::Prog* prog_;               // compiled program for regexp
-  int tail_;
 
   // Reverse Prog for DFA execution only
   mutable re2::Prog* rprog_;
-  mutable re2::Prog* hprog_;
-  mutable re2::CapturePlan* hplan_;
-  re2::CapturePlan* plan_;
   // Map from capture names to indices
   mutable const std::map<std::string, int>* named_groups_;
   // Map from capture indices to names
   mutable const std::map<int, std::string>* group_names_;
 
   mutable absl::once_flag rprog_once_;
-  mutable absl::once_flag hprog_once_;
   mutable absl::once_flag named_groups_once_;
   mutable absl::once_flag group_names_once_;
 

@@ -18,14 +18,13 @@ cc_library(
         "re2/bitmap256.cc",
         "re2/bitmap256.h",
         "re2/bitstate.cc",
-        "re2/capture_plan.cc",
-        "re2/capture_plan.h",
         "re2/compile.cc",
         "re2/dfa.cc",
         "re2/filtered_re2.cc",
         "re2/mimics_pcre.cc",
         "re2/nfa.cc",
         "re2/onepass.cc",
+        "re2/tdfa.cc",
         "re2/parse.cc",
         "re2/perl_groups.cc",
         "re2/pod_array.h",
@@ -157,9 +156,9 @@ cc_library(
 )
 
 cc_test(
-    name = "capture_plan_test",
+    name = "tdfa_test",
     size = "small",
-    srcs = ["re2/testing/capture_plan_test.cc"],
+    srcs = ["re2/testing/tdfa_test.cc"],
     deps = [
         ":re2",
         ":testing",

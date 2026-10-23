@@ -27,6 +27,7 @@ enum Engine {
   kEngineOnePass,          // Prog::SearchOnePass, if applicable
   kEngineBitState,         // Prog::SearchBitState
   kEngineBitStateReused,   // Prog::SearchBitState, one non-thread-safe Prog
+  kEngineTDFA,             // Prog::SearchTDFA, if applicable
   kEngineRE2,              // RE2, all submatches
   kEngineRE2a,             // RE2, only ask for match[0]
   kEngineRE2b,             // RE2, only ask whether it matched

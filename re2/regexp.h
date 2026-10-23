@@ -318,7 +318,8 @@ class Regexp {
 
     // Internal use only.
     WasDollar     = 1<<13,  // on kRegexpEndText: was $ in regexp text
-    AllParseFlags = (1<<14)-1,
+    ValidUTF8Run  = 1<<14,
+    AllParseFlags = (1<<15)-1,
   };
 
   // Get.  No set, Regexps are logically immutable once created.
@@ -374,6 +375,8 @@ class Regexp {
 
   // Increments reference count, returns object as convenience.
   Regexp* Incref();
+
+  Regexp* BytewiseRuns();
 
   // Decrements reference count and deletes this object if count reaches 0.
   void Decref();
@@ -512,6 +515,8 @@ class Regexp {
   // Constructor that generates a Star, Plus or Quest,
   // squashing the pair if sub is also a Star, Plus or Quest.
   static Regexp* StarPlusOrQuest(RegexpOp op, Regexp* sub, ParseFlags flags);
+
+  Regexp* Bytewise();
 
   // Constructor that generates a concatenation or alternation,
   // enforcing the limit on the number of subexpressions for
