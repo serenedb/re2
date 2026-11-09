@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "absl/base/attributes.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/string_view.h"
@@ -170,17 +171,21 @@ class LiteralFinder {
     return NULL;
   }
 
-  static bool Equal(const char* a, const char* b, size_t n) {
+  ABSL_ATTRIBUTE_ALWAYS_INLINE static bool Equal(const char* a, const char* b,
+                                                 size_t n) {
     return Compare<false>(a, b, n);
   }
 
-  static bool EqualIgnoreCase(const char* text, const char* needle, size_t n) {
+  ABSL_ATTRIBUTE_ALWAYS_INLINE static bool EqualIgnoreCase(const char* text,
+                                                           const char* needle,
+                                                           size_t n) {
     return Compare<true>(text, needle, n);
   }
 
  private:
   template <bool kIgnoreCase>
-  static bool Compare(const char* a, const char* b, size_t n) {
+  ABSL_ATTRIBUTE_ALWAYS_INLINE static bool Compare(const char* a,
+                                                   const char* b, size_t n) {
     if (n >= 8) {
       for (size_t i = 0; i + 8 < n; i += 8)
         if (!Same<uint64_t, kIgnoreCase>(a + i, b + i))
