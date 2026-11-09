@@ -329,6 +329,10 @@ class RE2 {
   // portion of the regexp.
   const std::string& error_arg() const { return *error_arg_; }
 
+  bool FullMatchWithoutEngine() const {
+    return has_full_match_set_ || segment_plan_ != NULL;
+  }
+
   // Returns the program size, a very approximate measure of a regexp's "cost".
   // Larger numbers are more expensive than smaller numbers.
   int ProgramSize() const;

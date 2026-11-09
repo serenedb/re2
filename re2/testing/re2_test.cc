@@ -1525,6 +1525,14 @@ TEST(RE2, Bug3061120) {
   EXPECT_FALSE(RE2::PartialMatch("s", re));  // broke because of latin long s
 }
 
+TEST(RE2, FullMatchWithoutEngine) {
+  EXPECT_TRUE(RE2("(?s)\\A.*abc.*\\z").FullMatchWithoutEngine());
+  EXPECT_TRUE(RE2("(?si).*istanbul.*").FullMatchWithoutEngine());
+  EXPECT_TRUE(RE2("abc|abd").FullMatchWithoutEngine());
+  EXPECT_FALSE(RE2("(?s).*[0-9]+.*").FullMatchWithoutEngine());
+  EXPECT_FALSE(RE2("a(b|c)*d").FullMatchWithoutEngine());
+}
+
 TEST(RE2, FoldedPlanMatchesEngines) {
   struct Atom {
     const char* pattern;
