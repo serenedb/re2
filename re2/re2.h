@@ -796,8 +796,8 @@ class RE2 {
 
   re2::Prog* ReverseProg() const;
 
-  bool MatchPlan(absl::string_view subtext, size_t startpos,
-                 absl::string_view* submatch, int nsubmatch) const;
+  bool MatchPlan(absl::string_view subtext, absl::string_view* submatch,
+                 int nsubmatch) const;
   bool MatchImpl(absl::string_view text, size_t startpos, size_t endpos,
                  Anchor re_anchor, absl::string_view* submatch,
                  int nsubmatch) const;

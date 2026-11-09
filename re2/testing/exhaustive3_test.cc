@@ -81,6 +81,20 @@ TEST(InterestingUTF8, SingleOps) {
                  1, InterestingUTF8(), "", "");
 }
 
+// Test case-insensitive concatenations of literals, . and .*, which
+// match through a folded segment plan, against the other engines.
+TEST(CaseFolding, LikeShapes) {
+  std::vector<std::string> atoms = Split(" ",
+    "a k \xE2\x84\xAA s \xC5\xBF i \xC4\xB0 \xCF\x83 \xCF\x82 \xD0\xB6 "
+    "[iI] - . .*");
+  std::vector<std::string> ops = Split(" ", "%s%s");
+  std::vector<std::string> alpha = Split(" ",
+    "a A k K \xE2\x84\xAA s S \xC5\xBF i I \xC4\xB0 \xC4\xB1 "
+    "\xCF\x83 \xCF\x82 \xCE\xA3 \xD0\xB6 \xD0\x96 - \n");
+  ExhaustiveTest(3, 2, atoms, ops, 3, alpha, "", "(?i)%s");
+  ExhaustiveTest(3, 2, atoms, ops, 2, alpha, "", "(?si)%s");
+}
+
 // Test interesting UTF-8 characters against character classes,
 // but wrap everything inside AB.
 TEST(InterestingUTF8, AB) {

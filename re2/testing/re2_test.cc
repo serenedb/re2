@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <map>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1522,6 +1523,74 @@ TEST(RE2, Bug3061120) {
   EXPECT_FALSE(RE2::PartialMatch("x", re));  // always worked
   EXPECT_FALSE(RE2::PartialMatch("k", re));  // broke because of kelvin
   EXPECT_FALSE(RE2::PartialMatch("s", re));  // broke because of latin long s
+}
+
+TEST(RE2, FoldedPlanMatchesEngines) {
+  struct Atom {
+    const char* pattern;
+    std::vector<std::string> texts;
+  };
+  const std::vector<std::string> ks = {"k", "K", "\xE2\x84\xAA"};
+  const std::vector<std::string> ss = {"s", "S", "\xC5\xBF"};
+  const std::vector<std::string> is = {"i", "I", "\xC4\xB0", "\xC4\xB1"};
+  const std::vector<std::string> sigmas = {"\xCF\x83", "\xCF\x82",
+                                           "\xCE\xA3"};
+  const Atom atoms[] = {
+      {"a", {"a", "A"}},
+      {"k", ks},
+      {"\xE2\x84\xAA", ks},
+      {"s", ss},
+      {"\xC5\xBF", ss},
+      {"i", is},
+      {"\xC4\xB0", is},
+      {"[iI]", is},
+      {"\xCF\x83", sigmas},
+      {"\xCF\x82", sigmas},
+      {"\xD0\xB6", {"\xD0\xB6", "\xD0\x96"}},
+      {"x", {"x", "X"}},
+      {"-", {"-"}},
+      {".", {}},
+      {".*", {}},
+  };
+  const std::vector<std::string> chars = {
+      "a", "A", "k", "K", "\xE2\x84\xAA", "s", "S", "\xC5\xBF", "i", "I",
+      "\xC4\xB0", "\xC4\xB1", "\xCF\x83", "\xCF\x82", "\xCE\xA3", "\xD0\xB6",
+      "\xD0\x96", "x", "X", "-", "\n", "\xFF", "\xE4\xB8\xAD"};
+  const char* const flags[] = {"(?i)", "(?si)", "(?i)^"};
+  std::mt19937 rng(20261109);
+  auto pick = [&](const std::vector<std::string>& v) -> const std::string& {
+    return v[rng() % v.size()];
+  };
+  for (int i = 0; i < 3000; i++) {
+    std::string pattern = flags[rng() % ABSL_ARRAYSIZE(flags)];
+    std::vector<const Atom*> used;
+    for (int n = 1 + rng() % 6; n > 0; n--) {
+      used.push_back(&atoms[rng() % ABSL_ARRAYSIZE(atoms)]);
+      pattern += used.back()->pattern;
+    }
+    RE2 plan(pattern);
+    RE2 engines("(" + pattern + ")");
+    ASSERT_TRUE(plan.ok()) << pattern;
+    ASSERT_TRUE(engines.ok()) << pattern;
+    for (int j = 0; j < 20; j++) {
+      std::string text;
+      for (const Atom* atom : used) {
+        if (!atom->texts.empty()) {
+          text += pick(atom->texts);
+        } else if (atom->pattern[1] != '*') {
+          text += pick(chars);
+        } else {
+          const int filler = rng() % 4 == 0 ? 30 + rng() % 700 : rng() % 4;
+          for (int k = 0; k < filler; k++)
+            text += pick(chars);
+        }
+      }
+      if (!text.empty() && rng() % 4 == 0)
+        text[rng() % text.size()] = pick(chars)[0];
+      EXPECT_EQ(RE2::FullMatch(text, engines), RE2::FullMatch(text, plan))
+          << pattern << " on " << absl::CEscape(text);
+    }
+  }
 }
 
 TEST(RE2, CapturingGroupNames) {

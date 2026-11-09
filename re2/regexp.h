@@ -692,6 +692,8 @@ inline Regexp::ParseFlags operator&(Regexp::ParseFlags a,
       static_cast<int>(a) & static_cast<int>(b));
 }
 
+Rune CycleFoldRune(Rune r);
+
 inline Regexp::ParseFlags operator~(Regexp::ParseFlags a) {
   // Attempting to produce a value out of enum's range has undefined behaviour.
   return static_cast<Regexp::ParseFlags>(

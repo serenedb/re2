@@ -48,6 +48,7 @@ class SegmentPlan {
     kAffix,
     kContains,
     kSegments,
+    kFolded,
   };
 
   SegmentPlan() = default;
@@ -56,14 +57,22 @@ class SegmentPlan {
   void ClosePiece(Piece* piece);
   void CloseSegment(Piece* piece, uint32_t* begin);
 
+  template <bool kIgnoreCase>
+  bool MatchShape(Shape shape, absl::string_view text) const;
+  bool MatchFolded(absl::string_view text) const;
+  size_t Fold(absl::string_view text, char* out) const;
+  template <bool kIgnoreCase>
   bool MatchGeneral(absl::string_view text) const;
   size_t UnitAt(const char* p, const char* end) const;
   size_t UnitBefore(const char* begin, const char* p) const;
   bool Units(absl::string_view text) const;
+  template <bool kIgnoreCase>
   size_t MatchAt(const Piece* piece, const Piece* end, absl::string_view text,
                  size_t pos, size_t limit) const;
+  template <bool kIgnoreCase>
   size_t MatchBefore(const Segment& segment, absl::string_view text,
                      size_t lower) const;
+  template <bool kIgnoreCase>
   size_t FindFrom(const Segment& segment, absl::string_view text, size_t pos,
                   size_t limit) const;
 
@@ -71,12 +80,14 @@ class SegmentPlan {
   std::vector<Piece> pieces_;
   std::vector<Segment> segments_;
   const char* literals_ = NULL;
+  const uint16_t* bases_ = NULL;
   size_t min_size_ = 0;
   uint32_t first_ = 0;
   uint32_t first_size_ = 0;
   uint32_t last_ = 0;
   uint32_t last_size_ = 0;
   Shape shape_ = Shape::kGeneral;
+  Shape folded_shape_ = Shape::kGeneral;
   bool any_string_ = false;
   bool latin1_ = false;
   bool valid_utf8_ = false;

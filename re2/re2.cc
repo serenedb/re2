@@ -892,12 +892,8 @@ static int ascii_strcasecmp(const char* a, const char* b, size_t len) {
 /***** Actual matching and rewriting code *****/
 
 ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool RE2::MatchPlan(
-    absl::string_view subtext, size_t startpos, absl::string_view* submatch,
+    absl::string_view subtext, absl::string_view* submatch,
     int nsubmatch) const {
-  if (!prefix_.empty() &&
-      (startpos != 0 || prefix_.size() > subtext.size() ||
-       !LiteralFinder::Equal(subtext.data(), prefix_.data(), prefix_.size())))
-    return false;
   if (nsubmatch == 0)
     return segment_plan_->Match(subtext);
   if (!segment_plan_->Match(subtext))
@@ -916,7 +912,7 @@ bool RE2::Match(absl::string_view text,
       endpos == text.size()) {
     if (text.size() < plan_min_size_)
       return false;
-    return MatchPlan(text, 0, NULL, 0);
+    return MatchPlan(text, NULL, 0);
   }
   return MatchImpl(text, startpos, endpos, re_anchor, submatch, nsubmatch);
 }
@@ -983,7 +979,7 @@ bool RE2::MatchImpl(absl::string_view text,
   if (segment_plan_ != NULL && nsubmatch <= 1 &&
       (re_anchor != UNANCHORED || !prefix_.empty()) &&
       (re_anchor == ANCHOR_BOTH || prog_->anchor_end()))
-    return MatchPlan(subtext, startpos, submatch, nsubmatch);
+    return MatchPlan(subtext, submatch, nsubmatch);
 
   if (class_run_) {
     const char* p = subtext.data();
