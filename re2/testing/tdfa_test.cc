@@ -53,6 +53,15 @@ const Pattern kPatterns[] = {
     {"([^/]*)\xc3\xa9", true},
     {"(.{2})\xe2\x82\xac", true},
     {"(?s)(.*)/(.*)", true},
+    {"(.+.)", true},
+    {"^(.+..)$", true},
+    {"(.+)(.+)", true},
+    {"((?:.+){2})", true},
+    {"(.+.+)", true},
+    {"(.+?)", true},
+    {"(a.*?)", true},
+    {"([^x]+[^y])", true},
+    {"(.*.?)$", true},
 };
 
 const char* kUnits[] = {"a", "b", "c", "d", "s", "w", "x", "y", "z", ":",
