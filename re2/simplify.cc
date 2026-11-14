@@ -223,10 +223,6 @@ Regexp* CoalesceWalker::Copy(Regexp* re) {
 }
 
 Regexp* CoalesceWalker::ShortVisit(Regexp* re, Regexp* parent_arg) {
-  // Should never be called: we use Walk(), not WalkExponential().
-#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-  ABSL_LOG(DFATAL) << "CoalesceWalker::ShortVisit called";
-#endif
   return re->Incref();
 }
 

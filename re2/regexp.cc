@@ -729,10 +729,6 @@ class NamedCapturesWalker : public Regexp::Walker<Ignored> {
   }
 
   virtual Ignored ShortVisit(Regexp* re, Ignored ignored) {
-    // Should never be called: we use Walk(), not WalkExponential().
-#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-    ABSL_LOG(DFATAL) << "NamedCapturesWalker::ShortVisit called";
-#endif
     return ignored;
   }
 
@@ -773,10 +769,6 @@ class CaptureNamesWalker : public Regexp::Walker<Ignored> {
   }
 
   virtual Ignored ShortVisit(Regexp* re, Ignored ignored) {
-    // Should never be called: we use Walk(), not WalkExponential().
-#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-    ABSL_LOG(DFATAL) << "CaptureNamesWalker::ShortVisit called";
-#endif
     return ignored;
   }
 

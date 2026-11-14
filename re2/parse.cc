@@ -577,10 +577,6 @@ int RepetitionWalker::PostVisit(Regexp* re, int parent_arg, int pre_arg,
 }
 
 int RepetitionWalker::ShortVisit(Regexp* re, int parent_arg) {
-  // Should never be called: we use Walk(), not WalkExponential().
-#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-  ABSL_LOG(DFATAL) << "RepetitionWalker::ShortVisit called";
-#endif
   return 0;
 }
 
@@ -613,7 +609,7 @@ bool Regexp::ParseState::PushRepetition(int min, int max, absl::string_view s,
   stacktop_ = re;
   if (min >= 2 || max >= 2) {
     RepetitionWalker w;
-    if (w.Walk(stacktop_, maximum_repeat_count) == 0) {
+    if (w.Walk(stacktop_, maximum_repeat_count) == 0 && !w.stopped_early()) {
       status_->set_code(kRegexpRepeatSize);
       status_->set_error_arg(s);
       return false;

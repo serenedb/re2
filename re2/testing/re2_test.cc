@@ -1240,6 +1240,30 @@ TEST(RE2, BigCountedRepetition) {
   ASSERT_TRUE(RE2::PartialMatch(s, re));
 }
 
+TEST(RE2, SimplifyOutOfWalkBudget) {
+  RE2 re(std::string(1100000, '.'));
+  ASSERT_FALSE(re.ok());
+  ASSERT_EQ(re.error_code(), RE2::ErrorPatternTooLarge);
+}
+
+TEST(RE2, NamedCapturingGroupsOutOfWalkBudget) {
+  RE2 re(std::string(1100000, '.'));
+  ASSERT_FALSE(re.ok());
+  ASSERT_TRUE(re.NamedCapturingGroups().empty());
+}
+
+TEST(RE2, CapturingGroupNamesOutOfWalkBudget) {
+  RE2 re(std::string(1100000, '.'));
+  ASSERT_FALSE(re.ok());
+  ASSERT_TRUE(re.CapturingGroupNames().empty());
+}
+
+TEST(RE2, RepetitionOutOfWalkBudget) {
+  RE2 re("(?:" + std::string(1100000, '.') + "){2}");
+  ASSERT_FALSE(re.ok());
+  ASSERT_EQ(re.error_code(), RE2::ErrorPatternTooLarge);
+}
+
 TEST(RE2, DeepRecursion) {
   // Test for deep stack recursion.  This would fail with a
   // segmentation violation due to stack overflow before pcre was
