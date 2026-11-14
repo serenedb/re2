@@ -516,7 +516,13 @@ class Regexp {
   // squashing the pair if sub is also a Star, Plus or Quest.
   static Regexp* StarPlusOrQuest(RegexpOp op, Regexp* sub, ParseFlags flags);
 
-  Regexp* Bytewise();
+  enum RunFollow {
+    kFollowNothing,
+    kFollowBoundary,
+    kFollowMatchEnd,
+  };
+
+  Regexp* Bytewise(RunFollow follow);
 
   // Constructor that generates a concatenation or alternation,
   // enforcing the limit on the number of subexpressions for

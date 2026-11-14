@@ -362,48 +362,88 @@ bool CoversNonAscii(CharClass* cc) {
   return next > Runemax;
 }
 
+bool StartsOnBoundary(Regexp* re) {
+  switch (re->op()) {
+    case kRegexpLiteral:
+    case kRegexpLiteralString:
+    case kRegexpCharClass:
+    case kRegexpAnyChar:
+    case kRegexpEndText:
+    case kRegexpEndLine:
+    case kRegexpWordBoundary:
+      return true;
+    case kRegexpConcat:
+      return re->nsub() > 0 && StartsOnBoundary(re->sub()[0]);
+    case kRegexpCapture:
+      return StartsOnBoundary(re->sub()[0]);
+    case kRegexpAlternate:
+      for (int i = 0; i < re->nsub(); i++) {
+        if (!StartsOnBoundary(re->sub()[i]))
+          return false;
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 Regexp* Regexp::BytewiseRuns() {
   if ((parse_flags() & Latin1) || HasAnyByte(this))
     return NULL;
-  return Bytewise();
+  return Bytewise(kFollowMatchEnd);
 }
 
-Regexp* Regexp::Bytewise() {
+Regexp* Regexp::Bytewise(RunFollow follow) {
   switch (op_) {
     case kRegexpStar:
     case kRegexpPlus: {
       Regexp* body = sub()[0];
+      const bool marked =
+          follow == kFollowBoundary ||
+          (follow == kFollowMatchEnd && !(parse_flags() & NonGreedy));
       const ParseFlags flags =
           static_cast<ParseFlags>(body->parse_flags() | ValidUTF8Run);
       Regexp* rebuilt;
-      if (body->op_ == kRegexpAnyChar) {
+      if (marked && body->op_ == kRegexpAnyChar) {
         rebuilt = new Regexp(kRegexpAnyChar, flags);
-      } else if (body->op_ == kRegexpCharClass && CoversNonAscii(body->cc())) {
+      } else if (marked && body->op_ == kRegexpCharClass &&
+                 CoversNonAscii(body->cc())) {
         CharClassBuilder copy;
         for (CharClass::iterator it = body->cc()->begin();
              it != body->cc()->end(); ++it)
           copy.AddRange(it->lo, it->hi);
         rebuilt = NewCharClass(copy.GetCharClass(), flags);
       } else {
-        rebuilt = body->Bytewise();
+        rebuilt = body->Bytewise(kFollowNothing);
       }
       return StarPlusOrQuest(op(), rebuilt, parse_flags());
     }
     case kRegexpQuest:
-      return StarPlusOrQuest(op(), sub()[0]->Bytewise(), parse_flags());
+      return StarPlusOrQuest(op(), sub()[0]->Bytewise(follow), parse_flags());
     case kRegexpRepeat:
-      return Repeat(sub()[0]->Bytewise(), parse_flags(), min(), max());
-    case kRegexpConcat:
+      return Repeat(sub()[0]->Bytewise(kFollowNothing), parse_flags(), min(),
+                    max());
+    case kRegexpConcat: {
+      std::vector<Regexp*> subs(nsub_);
+      for (int i = nsub_ - 1; i >= 0; i--) {
+        const RunFollow next =
+            i + 1 == nsub_ ? follow
+            : StartsOnBoundary(sub()[i + 1]) ? kFollowBoundary
+                                             : kFollowNothing;
+        subs[i] = sub()[i]->Bytewise(next);
+      }
+      return ConcatOrAlternate(op(), subs.data(), nsub_, parse_flags(), false);
+    }
     case kRegexpAlternate: {
       std::vector<Regexp*> subs(nsub_);
       for (int i = 0; i < nsub_; i++)
-        subs[i] = sub()[i]->Bytewise();
+        subs[i] = sub()[i]->Bytewise(follow);
       return ConcatOrAlternate(op(), subs.data(), nsub_, parse_flags(), false);
     }
     case kRegexpCapture: {
-      Regexp* re = Capture(sub()[0]->Bytewise(), parse_flags(), cap());
+      Regexp* re = Capture(sub()[0]->Bytewise(follow), parse_flags(), cap());
       if (name() != NULL)
         re->name_ = new std::string(*name());
       return re;
@@ -438,7 +478,6 @@ static bool TopEqual(Regexp* a, Regexp* b) {
   switch (a->op()) {
     case kRegexpNoMatch:
     case kRegexpEmptyMatch:
-    case kRegexpAnyChar:
     case kRegexpAnyByte:
     case kRegexpBeginLine:
     case kRegexpEndLine:
@@ -446,6 +485,10 @@ static bool TopEqual(Regexp* a, Regexp* b) {
     case kRegexpNoWordBoundary:
     case kRegexpBeginText:
       return true;
+
+    case kRegexpAnyChar:
+      return ((a->parse_flags() ^ b->parse_flags()) &
+              Regexp::ValidUTF8Run) == 0;
 
     case kRegexpEndText:
       // The parse flags remember whether it's \z or (?-m:$),
@@ -491,7 +534,9 @@ static bool TopEqual(Regexp* a, Regexp* b) {
     case kRegexpCharClass: {
       CharClass* acc = a->cc();
       CharClass* bcc = b->cc();
-      return acc->size() == bcc->size() &&
+      return ((a->parse_flags() ^ b->parse_flags()) &
+              Regexp::ValidUTF8Run) == 0 &&
+             acc->size() == bcc->size() &&
              acc->end() - acc->begin() == bcc->end() - bcc->begin() &&
              memcmp(acc->begin(), bcc->begin(),
                     (acc->end() - acc->begin()) * sizeof acc->begin()[0]) == 0;
