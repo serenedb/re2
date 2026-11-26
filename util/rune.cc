@@ -124,63 +124,6 @@ bad:
 }
 
 int
-runetochar(char *str, const Rune *rune)
-{
-	/* Runes are signed, so convert to unsigned for range check. */
-	unsigned int c;
-
-	/*
-	 * one character sequence
-	 *	00000-0007F => 00-7F
-	 */
-	c = *rune;
-	if(c <= Rune1) {
-		str[0] = static_cast<char>(c);
-		return 1;
-	}
-
-	/*
-	 * two character sequence
-	 *	0080-07FF => T2 Tx
-	 */
-	if(c <= Rune2) {
-		str[0] = T2 | static_cast<char>(c >> 1*Bitx);
-		str[1] = Tx | (c & Maskx);
-		return 2;
-	}
-
-	/*
-	 * If the Rune is out of range, convert it to the error rune.
-	 * Do this test here because the error rune encodes to three bytes.
-	 * Doing it earlier would duplicate work, since an out of range
-	 * Rune wouldn't have fit in one or two bytes.
-	 */
-	if (c > Runemax)
-		c = Runeerror;
-
-	/*
-	 * three character sequence
-	 *	0800-FFFF => T3 Tx Tx
-	 */
-	if (c <= Rune3) {
-		str[0] = T3 | static_cast<char>(c >> 2*Bitx);
-		str[1] = Tx | ((c >> 1*Bitx) & Maskx);
-		str[2] = Tx | (c & Maskx);
-		return 3;
-	}
-
-	/*
-	 * four character sequence (21-bit value)
-	 *     10000-1FFFFF => T4 Tx Tx Tx
-	 */
-	str[0] = T4 | static_cast<char>(c >> 3*Bitx);
-	str[1] = Tx | ((c >> 2*Bitx) & Maskx);
-	str[2] = Tx | ((c >> 1*Bitx) & Maskx);
-	str[3] = Tx | (c & Maskx);
-	return 4;
-}
-
-int
 runelen(Rune rune)
 {
 	char str[10];

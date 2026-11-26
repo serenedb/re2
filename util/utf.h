@@ -33,7 +33,33 @@ enum
   Runemax	= 0x10FFFF,	/* maximum rune value */
 };
 
-int runetochar(char* s, const Rune* r);
+inline int runetochar(char* s, const Rune* r) {
+  unsigned int c = *r;
+  if (c <= 0x7F) {
+    s[0] = static_cast<char>(c);
+    return 1;
+  }
+  if (c <= 0x7FF) {
+    s[0] = static_cast<char>(0xC0 | (c >> 6));
+    s[1] = static_cast<char>(0x80 | (c & 0x3F));
+    return 2;
+  }
+  if (c > 0xFFFF) {
+    if (c <= Runemax) {
+      s[0] = static_cast<char>(0xF0 | (c >> 18));
+      s[1] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+      s[2] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+      s[3] = static_cast<char>(0x80 | (c & 0x3F));
+      return 4;
+    }
+    c = Runeerror;
+  }
+  s[0] = static_cast<char>(0xE0 | (c >> 12));
+  s[1] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+  s[2] = static_cast<char>(0x80 | (c & 0x3F));
+  return 3;
+}
+
 int chartorune(Rune* r, const char* s);
 int fullrune(const char* s, int n);
 int utflen(const char* s);

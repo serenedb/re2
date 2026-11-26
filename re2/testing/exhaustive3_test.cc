@@ -39,6 +39,18 @@ static std::string UTF8(Rune r) {
   return std::string(buf);
 }
 
+TEST(RuneToChar, Boundaries) {
+  EXPECT_EQ(UTF8(0x7F), "\x7F");
+  EXPECT_EQ(UTF8(0x80), "\xC2\x80");
+  EXPECT_EQ(UTF8(0x7FF), "\xDF\xBF");
+  EXPECT_EQ(UTF8(0x800), "\xE0\xA0\x80");
+  EXPECT_EQ(UTF8(0xFFFF), "\xEF\xBF\xBF");
+  EXPECT_EQ(UTF8(0x10000), "\xF0\x90\x80\x80");
+  EXPECT_EQ(UTF8(Runemax), "\xF4\x8F\xBF\xBF");
+  EXPECT_EQ(UTF8(Runemax + 1), "\xEF\xBF\xBD");
+  EXPECT_EQ(UTF8(-1), "\xEF\xBF\xBD");
+}
+
 // Returns a vector of "interesting" UTF8 characters.
 // Unicode is now too big to just return all of them,
 // so UTF8Characters return a set likely to be good test cases.
